@@ -49,6 +49,8 @@ jobs:
     needs: quality
     steps:
       - uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 0
       - name: Build image
         run: docker build -t judicial-ai-platform:ci .
       - name: Trivy scan
