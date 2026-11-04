@@ -62,6 +62,9 @@ class GraphStore:
     def health(self) -> dict[str, Any]:
         return {"status": "ok", "backend": self.backend}
 
+    def close(self) -> None:
+        return None
+
 
 class SqlGraphStore(GraphStore):
     backend = "sql"
@@ -405,6 +408,9 @@ class Neo4jGraphStore(GraphStore):
         except Exception as exc:  # noqa: BLE001
             return {"status": "error", "backend": "neo4j", "error": str(exc)[:240]}
 
+    def close(self) -> None:
+        self._driver.close()
+
 
 @lru_cache
 def get_graph_store() -> GraphStore:
@@ -412,6 +418,15 @@ def get_graph_store() -> GraphStore:
     if settings.graph_backend == "neo4j":
         return Neo4jGraphStore()
     return SqlGraphStore()
+
+
+def close_graph_store() -> None:
+    if get_graph_store.cache_info().currsize == 0:
+        return
+    try:
+        get_graph_store().close()
+    finally:
+        get_graph_store.cache_clear()
 
 
 def graph_search_or_degraded(

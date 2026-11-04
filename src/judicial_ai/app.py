@@ -15,6 +15,7 @@ from .db import init_db
 from .errors import register_exception_handlers
 from .logging import setup_logging
 from .middleware import RequestContextMiddleware
+from .services.graph_store import close_graph_store
 
 DEFAULT_MODULES = ["health", "auth", "admin", "gateway", "retrieval", "mcp", "governance", "jobs"]
 STATIC_DIR = Path(__file__).parent / "static"
@@ -40,7 +41,10 @@ async def lifespan(app: FastAPI):
         if not settings.require_prod_alias:
             raise RuntimeError("生产环境必须启用 REQUIRE_PROD_ALIAS")
     init_db()
-    yield
+    try:
+        yield
+    finally:
+        close_graph_store()
 
 
 def create_app(modules: list[str] | None = None) -> FastAPI:
