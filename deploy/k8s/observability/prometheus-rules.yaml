@@ -1,0 +1,60 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: judicial-ai-alerts
+  namespace: judicial-ai
+  labels:
+    release: prometheus
+spec:
+  groups:
+    - name: judicial-ai.availability
+      rules:
+        - alert: JudicialApiDown
+          expr: up{job="judicial-ai-api"} == 0
+          for: 2m
+          labels:
+            severity: critical
+          annotations:
+            summary: "司法 AI 中台 API 实例不可达"
+            description: "{{ $labels.instance }} 已连续 2 分钟无法抓取。"
+        - alert: JudicialApiHigh5xx
+          expr: |
+            sum(rate(judicial_http_requests_total{status=~"5.."}[5m]))
+            /
+            clamp_min(sum(rate(judicial_http_requests_total[5m])), 0.001) > 0.02
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: "司法 AI 中台 5xx 比例超过 2%"
+        - alert: JudicialApiHighLatency
+          expr: |
+            histogram_quantile(0.95,
+              sum(rate(judicial_http_request_duration_seconds_bucket[5m])) by (le)
+            ) > 2.5
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "司法 AI 中台 P95 延迟超过 2.5 秒"
+        - alert: JudicialAuthFailureSpike
+          expr: sum(rate(judicial_auth_failures_total[5m])) > 5
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "认证失败速率异常"
+        - alert: JudicialJobFailures
+          expr: sum(rate(judicial_jobs_total{status="FAILED"}[10m])) > 0.2
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "异步任务失败速率升高"
+        - alert: JudicialBackupFailed
+          expr: kube_job_status_failed{job_name=~"judicial-ai-backup.*"} > 0
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: "司法 AI 中台备份任务失败"

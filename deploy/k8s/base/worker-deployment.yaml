@@ -1,0 +1,78 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: judicial-ai-worker
+  namespace: judicial-ai
+  labels:
+    app.kubernetes.io/name: judicial-ai-worker
+    app.kubernetes.io/part-of: judicial-ai-platform
+spec:
+  replicas: 1
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: judicial-ai-worker
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: judicial-ai-worker
+        app.kubernetes.io/part-of: judicial-ai-platform
+    spec:
+      serviceAccountName: judicial-ai
+      terminationGracePeriodSeconds: 60
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: worker
+          image: judicial-ai-platform:0.2.0
+          imagePullPolicy: IfNotPresent
+          command: ["python", "-m", "judicial_ai.worker"]
+          envFrom:
+            - configMapRef:
+                name: judicial-ai-config
+            - secretRef:
+                name: judicial-ai-secrets
+          env:
+            - name: NODE_ID
+              value: "101"
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+          readinessProbe:
+            exec:
+              command:
+                - python
+                - -c
+                - "from judicial_ai.db import SessionLocal; from sqlalchemy import text; s=SessionLocal(); s.execute(text('SELECT 1')); s.close()"
+            initialDelaySeconds: 10
+            periodSeconds: 30
+            timeoutSeconds: 5
+          livenessProbe:
+            exec:
+              command:
+                - python
+                - -c
+                - "from judicial_ai.db import SessionLocal; from sqlalchemy import text; s=SessionLocal(); s.execute(text('SELECT 1')); s.close()"
+            initialDelaySeconds: 20
+            periodSeconds: 60
+            timeoutSeconds: 5
+      volumes:
+        - name: tmp
+          emptyDir: {}

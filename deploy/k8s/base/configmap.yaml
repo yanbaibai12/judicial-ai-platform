@@ -1,0 +1,42 @@
+﻿apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: judicial-ai-config
+  namespace: judicial-ai
+data:
+  APP_ENV: "prod"
+  APP_VERSION: "0.2.0"
+  LOG_LEVEL: "INFO"
+  DOCS_ENABLED: "false"
+  AUTO_CREATE_SCHEMA: "false"
+  AUTH_MODE: "oidc"
+  ALLOW_STATIC_ADMIN: "false"
+  RESOURCE_ACL_ENFORCED: "true"
+  OIDC_ALGORITHMS: "RS256"
+  OIDC_ADMIN_ROLES: "platform-admin"
+  OIDC_OPERATOR_ROLES: "platform-operator"
+  OIDC_READER_ROLES: "platform-reader"
+  OIDC_DEFAULT_TENANT_ID: "1"
+  RATE_LIMIT_ENABLED: "true"
+  RATE_LIMIT_FAIL_OPEN: "false"
+  REDIS_KEY_PREFIX: "jai"
+  VECTOR_BACKEND: "milvus"
+  MILVUS_COLLECTION_PREFIX: "jai_chunks"
+  MILVUS_SPARSE_ENABLED: "true"
+  VECTOR_FALLBACK_SQL: "false"
+  GRAPH_ENABLED: "true"
+  GRAPH_BACKEND: "neo4j"
+  JOB_MODE: "worker"
+  WORKER_POLL_SECONDS: "2"
+  WORKER_BATCH_SIZE: "10"
+  JOB_MAX_ATTEMPTS: "3"
+  METRICS_ENABLED: "true"
+  ACCESS_LOG_ENABLED: "true"
+  SECURITY_HEADERS_ENABLED: "true"
+  HSTS_ENABLED: "true"
+  TRUSTED_HOSTS: "judicial-ai.example.com"
+  MAX_REQUEST_BYTES: "10485760"
+  GOVERNANCE_REDACTION_ENABLED: "true"
+  GOVERNANCE_STORE_EVENT_CONTENT: "true"
+  CORS_ORIGINS: "https://judicial-ai.example.com"
+

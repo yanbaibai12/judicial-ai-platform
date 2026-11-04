@@ -1,0 +1,21 @@
+﻿apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: judicial-ai
+resources:
+  - namespace.yaml
+  - configmap.yaml
+  - app-deployment.yaml
+  - worker-deployment.yaml
+  - ingress.yaml
+  - hpa-pdb.yaml
+  - networkpolicy.yaml
+  - migration-job.yaml
+  - backup-cronjob.yaml
+images:
+  - name: judicial-ai-platform
+    newTag: 0.2.0
+  - name: judicial-ai-backup
+    newTag: 0.2.0
+commonLabels:
+  app.kubernetes.io/part-of: judicial-ai-platform
+

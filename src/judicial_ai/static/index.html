@@ -1,0 +1,990 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0c1b2a">
+  <meta name="description" content="司法 AI 中台运行控制台：统一模型推理、公共检索、MCP 工具与数据治理。">
+  <title>司法 AI 中台 · 运行控制台</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%230c1b2a'/%3E%3Cpath d='M20 18h24v5H20zm2 10h20v20H22zm5 5v10h10V33z' fill='%23d2b170'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="/console/app.css?v=1">
+</head>
+<body>
+  <a class="skip-link" href="#main">跳到主要内容</a>
+
+  <svg class="svg-sprite" aria-hidden="true" focusable="false">
+    <symbol id="i-home" viewBox="0 0 24 24"><path d="m3 10 9-7 9 7v10a1 1 0 0 1-1 1h-5v-7H9v7H4a1 1 0 0 1-1-1Z"/></symbol>
+    <symbol id="i-grid" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></symbol>
+    <symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 3 4.5 6v5.5c0 4.5 3.1 7.9 7.5 9.5 4.4-1.6 7.5-5 7.5-9.5V6Z"/><path d="m8.5 12 2.3 2.3 4.7-5"/></symbol>
+    <symbol id="i-settings" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06-2.83 2.83-.06-.06a1.7 1.7 0 0 0-1.88-.34 1.7 1.7 0 0 0-1.03 1.56V21h-4v-.08A1.7 1.7 0 0 0 8.97 19.4a1.7 1.7 0 0 0-1.88.34l-.06.06-2.83-2.83.06-.06A1.7 1.7 0 0 0 4.6 15a1.7 1.7 0 0 0-1.56-1.03H3v-4h.08A1.7 1.7 0 0 0 4.6 8.94a1.7 1.7 0 0 0-.34-1.88l-.06-.06L7.03 4.17l.06.06A1.7 1.7 0 0 0 8.97 4.6 1.7 1.7 0 0 0 10 3.04V3h4v.08a1.7 1.7 0 0 0 1.03 1.56 1.7 1.7 0 0 0 1.88-.34l.06-.06 2.83 2.83-.06.06a1.7 1.7 0 0 0-.34 1.88A1.7 1.7 0 0 0 20.96 10H21v4h-.08A1.7 1.7 0 0 0 19.4 15Z"/></symbol>
+    <symbol id="i-command" viewBox="0 0 24 24"><path d="M9 6a3 3 0 1 0-3 3h12a3 3 0 1 0-3-3v12a3 3 0 1 0 3-3H6a3 3 0 1 0 3 3Z"/></symbol>
+    <symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></symbol>
+    <symbol id="i-moon" viewBox="0 0 24 24"><path d="M20.3 14.5A8.5 8.5 0 0 1 9.5 3.7a8.5 8.5 0 1 0 10.8 10.8Z"/></symbol>
+    <symbol id="i-arrow-up-right" viewBox="0 0 24 24"><path d="M7 17 17 7M8 7h9v9"/></symbol>
+    <symbol id="i-chevron-right" viewBox="0 0 24 24"><path d="m9 5 7 7-7 7"/></symbol>
+    <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 7v5h-5M4 17v-5h5"/><path d="M6.1 8.2A7 7 0 0 1 18.5 7M5.5 17A7 7 0 0 0 17.9 15.8"/></symbol>
+    <symbol id="i-activity" viewBox="0 0 24 24"><path d="M3 12h4l2.5-6 4 12L16 12h5"/></symbol>
+    <symbol id="i-cpu" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2"/><rect x="9.5" y="9.5" width="5" height="5" rx="1"/><path d="M9 3v3M15 3v3M9 18v3M15 18v3M3 9h3M3 15h3M18 9h3M18 15h3"/></symbol>
+    <symbol id="i-book" viewBox="0 0 24 24"><path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H20v16H6.5A2.5 2.5 0 0 0 4 21.5Z"/><path d="M4 18.5A2.5 2.5 0 0 1 6.5 16H20"/></symbol>
+    <symbol id="i-tool" viewBox="0 0 24 24"><path d="m14.7 6.3 3-3a4 4 0 0 1-5 5l-7.8 7.8a2.1 2.1 0 0 1-3-3l7.8-7.8a4 4 0 0 1 5 5Z"/><path d="m5 19 1-3 2 2Z"/></symbol>
+    <symbol id="i-layers" viewBox="0 0 24 24"><path d="m12 3 9 5-9 5-9-5Z"/><path d="m3 13 9 5 9-5M3 18l9 5 9-5"/></symbol>
+    <symbol id="i-database" viewBox="0 0 24 24"><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v7c0 1.7 3.6 3 8 3s8-1.3 8-3V5M4 12v7c0 1.7 3.6 3 8 3s8-1.3 8-3v-7"/></symbol>
+    <symbol id="i-upload" viewBox="0 0 24 24"><path d="M12 16V4M8 8l4-4 4 4"/><path d="M4 16v3a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-3"/></symbol>
+    <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3.5 2"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12 4 4L19 6"/></symbol>
+    <symbol id="i-alert" viewBox="0 0 24 24"><path d="M12 3 2.5 20h19Z"/><path d="M12 9v5M12 17.5v.5"/></symbol>
+    <symbol id="i-close" viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"/></symbol>
+    <symbol id="i-menu" viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></symbol>
+    <symbol id="i-lock" viewBox="0 0 24 24"><rect x="5" y="10" width="14" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></symbol>
+    <symbol id="i-link" viewBox="0 0 24 24"><path d="M10 13a5 5 0 0 0 7.5.5l2-2a5 5 0 0 0-7-7l-1.2 1.2"/><path d="M14 11a5 5 0 0 0-7.5-.5l-2 2a5 5 0 0 0 7 7l1.2-1.2"/></symbol>
+    <symbol id="i-copy" viewBox="0 0 24 24"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/></symbol>
+    <symbol id="i-arrow-right" viewBox="0 0 24 24"><path d="M4 12h16M14 6l6 6-6 6"/></symbol>
+    <symbol id="i-filter" viewBox="0 0 24 24"><path d="M3 5h18l-7 8v6l-4 2v-8Z"/></symbol>
+    <symbol id="i-spark" viewBox="0 0 24 24"><path d="m12 3 1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8Z"/><path d="m19 16 .8 2.2L22 19l-2.2.8L19 22l-.8-2.2L16 19l2.2-.8Z"/></symbol>
+  </svg>
+
+  <div class="ambient" aria-hidden="true">
+    <span class="ambient-a"></span>
+    <span class="ambient-b"></span>
+  </div>
+
+  <div class="app-shell">
+    <aside class="sidebar" id="sidebar" aria-label="主导航">
+      <div class="brand">
+        <div class="brand-seal" aria-hidden="true">
+          <span>司</span>
+          <i></i>
+        </div>
+        <div class="brand-copy">
+          <strong>司法 AI 中台</strong>
+          <span>JUDICIAL INTELLIGENCE</span>
+        </div>
+        <button class="icon-btn sidebar-close" type="button" data-close-sidebar aria-label="关闭导航">
+          <svg><use href="#i-close"></use></svg>
+        </button>
+      </div>
+
+      <div class="workspace">
+        <div class="workspace-mark">省</div>
+        <div>
+          <span>当前工作空间</span>
+          <strong>省法院 · 生产域</strong>
+        </div>
+        <span class="workspace-live" title="运行正常"></span>
+      </div>
+
+      <nav class="nav">
+        <span class="nav-label">运行台</span>
+        <button class="nav-item is-active" type="button" data-route="overview" aria-current="page">
+          <svg><use href="#i-home"></use></svg><span>总览</span><em>01</em>
+        </button>
+        <button class="nav-item" type="button" data-route="capabilities">
+          <svg><use href="#i-grid"></use></svg><span>能力网关</span><em>02</em>
+        </button>
+        <button class="nav-item" type="button" data-route="retrieval">
+          <svg><use href="#i-search"></use></svg><span>知识检索</span><em>03</em>
+        </button>
+        <button class="nav-item" type="button" data-route="governance">
+          <svg><use href="#i-shield"></use></svg><span>数据治理</span><em>04</em>
+        </button>
+        <span class="nav-label nav-label-second">平台</span>
+        <button class="nav-item" type="button" data-route="settings">
+          <svg><use href="#i-settings"></use></svg><span>系统设置</span><em>05</em>
+        </button>
+      </nav>
+
+      <div class="sidebar-card">
+        <div class="sidebar-card-head">
+          <svg><use href="#i-shield"></use></svg>
+          <span>JEV SHADOW</span>
+          <i class="status-dot is-ok"></i>
+        </div>
+        <p>外部决策模型仅旁路观察，规则引擎始终兜底。</p>
+        <div class="sidebar-meter"><span style="width:18%"></span></div>
+        <div class="sidebar-card-foot"><span>流量占比</span><strong>18%</strong></div>
+      </div>
+
+      <div class="sidebar-foot">
+        <div class="system-state">
+          <span class="status-dot is-ok"></span>
+          <div><strong>所有系统运行正常</strong><small>最后检查 12 秒前</small></div>
+        </div>
+        <a class="sidebar-link" href="/docs" target="_blank" rel="noreferrer">
+          <svg><use href="#i-link"></use></svg><span>API 文档</span><svg class="tiny-arrow"><use href="#i-arrow-up-right"></use></svg>
+        </a>
+      </div>
+    </aside>
+
+    <button class="sidebar-scrim" type="button" data-close-sidebar aria-label="关闭导航" tabindex="-1"></button>
+
+    <main class="main" id="main">
+      <header class="topbar">
+        <div class="topbar-left">
+          <button class="icon-btn menu-btn" type="button" data-open-sidebar aria-label="打开导航">
+            <svg><use href="#i-menu"></use></svg>
+          </button>
+          <div class="breadcrumb">
+            <span>省法院</span><i>/</i><strong id="breadcrumbCurrent">总览</strong>
+          </div>
+        </div>
+        <div class="topbar-actions">
+          <button class="search-trigger" type="button" data-open-command>
+            <svg><use href="#i-search"></use></svg>
+            <span>搜索能力、知识库或前往…</span>
+            <kbd>Ctrl K</kbd>
+          </button>
+          <button class="icon-btn theme-btn" type="button" id="themeToggle" aria-label="切换深色模式">
+            <svg class="icon-sun"><use href="#i-sun"></use></svg>
+            <svg class="icon-moon"><use href="#i-moon"></use></svg>
+          </button>
+          <button class="connection-pill" type="button" data-open-token>
+            <span class="connection-dot"></span>
+            <span id="connectionLabel">示例数据</span>
+            <svg><use href="#i-chevron-right"></use></svg>
+          </button>
+          <div class="avatar" title="平台管理员">管</div>
+        </div>
+      </header>
+
+      <div class="content">
+        <section class="page is-active" id="page-overview" data-page="overview">
+          <div class="hero">
+            <div class="hero-lines" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></div>
+            <div class="hero-copy">
+              <div class="eyebrow"><span class="live-dot"></span>平台运行平稳<span class="eyebrow-sep"></span><time id="todayLabel">2026 年 10 月 20 日</time></div>
+              <h1>司法智能，<span class="serif-em">有据可循。</span></h1>
+              <p>统一模型推理、公共检索、MCP 工具与数据治理。每一次智能调用，都有可审计的轨迹。</p>
+              <div class="hero-actions">
+                <button class="btn btn-primary" type="button" data-route="governance">
+                  查看治理态势<svg><use href="#i-arrow-right"></use></svg>
+                </button>
+                <a class="btn btn-quiet" href="/docs" target="_blank" rel="noreferrer">
+                  <svg><use href="#i-link"></use></svg>API 文档
+                </a>
+              </div>
+            </div>
+            <div class="hero-panel">
+              <div class="hero-panel-head">
+                <span><svg><use href="#i-activity"></use></svg>系统脉搏</span>
+                <em>近 24 小时</em>
+              </div>
+              <div class="pulse-row">
+                <div class="pulse-gauge" id="pulseGauge" style="--value: 99.2">
+                  <div class="pulse-inner">
+                    <strong id="availabilityValue">99.2<span>%</span></strong>
+                    <small>调用成功率</small>
+                  </div>
+                </div>
+                <div class="pulse-stats">
+                  <div><span>模型推理</span><strong id="pulseInference">6,230</strong><small>次调用</small></div>
+                  <div><span>公共检索</span><strong id="pulseRetrieval">4,318</strong><small>次召回</small></div>
+                  <div><span>MCP 工具</span><strong id="pulseTools">1,620</strong><small>次执行</small></div>
+                </div>
+              </div>
+              <div class="hero-panel-foot">
+                <span>当前决策引擎</span>
+                <strong><i class="status-dot is-ok"></i>规则优先 · 影子旁路</strong>
+              </div>
+            </div>
+          </div>
+
+          <div class="stat-grid">
+            <article class="stat-card">
+              <div class="stat-top"><span>平台调用</span><svg><use href="#i-activity"></use></svg></div>
+              <div class="stat-value"><strong id="statCalls">12,847</strong><span class="trend is-up">+12.4%</span></div>
+              <div class="stat-foot"><span>治理事件累计</span><span>模型与检索合计</span></div>
+              <div class="spark" data-spark="38,44,41,54,49,63,58,72,69,82,78,91"></div>
+            </article>
+            <article class="stat-card">
+              <div class="stat-top"><span>平均响应</span><svg><use href="#i-clock"></use></svg></div>
+              <div class="stat-value"><strong>486</strong><span class="unit">ms</span><span class="trend is-down">-8.2%</span></div>
+              <div class="stat-foot"><span>P95 1.24s</span><span>含检索与重排</span></div>
+              <div class="spark" data-spark="72,68,74,61,66,58,63,52,57,48,51,44"></div>
+            </article>
+            <article class="stat-card">
+              <div class="stat-top"><span>反馈正率</span><svg><use href="#i-spark"></use></svg></div>
+              <div class="stat-value"><strong id="statFeedback">91.4</strong><span class="unit">%</span><span class="trend is-up">+1.8%</span></div>
+              <div class="stat-foot"><span id="statFeedbackSub">1,996 / 2,184</span><span>有效反馈</span></div>
+              <div class="spark" data-spark="41,46,44,52,48,57,61,58,67,71,69,76"></div>
+            </article>
+            <article class="stat-card">
+              <div class="stat-top"><span>数据质量</span><svg><use href="#i-database"></use></svg></div>
+              <div class="stat-value"><strong id="statQuality">91.0</strong><span class="unit">分</span><span class="trend is-up">+3.6</span></div>
+              <div class="stat-foot"><span id="statQualitySub">5,602 条数据</span><span>已发布版本 14</span></div>
+              <div class="spark" data-spark="54,58,57,63,61,68,72,70,76,79,84,88"></div>
+            </article>
+          </div>
+
+          <div class="section-grid">
+            <article class="card chain-card">
+              <div class="card-head">
+                <div>
+                  <span class="card-kicker">RETRIEVAL CHAIN</span>
+                  <h2>检索与决策链路</h2>
+                </div>
+                <button class="text-btn" type="button" data-route="retrieval">打开检索台<svg><use href="#i-arrow-up-right"></use></svg></button>
+              </div>
+              <div class="chain-body">
+                <div class="intent-block">
+                  <div class="block-label"><span>意图分布</span><em id="intentTotal">今日 4,318 次</em></div>
+                  <div class="intent-bars" id="intentBars">
+                    <div class="intent-row"><span>法条检索</span><div><i style="width:42%"></i></div><strong>42%</strong></div>
+                    <div class="intent-row"><span>案例分析</span><div><i style="width:28%"></i></div><strong>28%</strong></div>
+                    <div class="intent-row"><span>程序咨询</span><div><i style="width:18%"></i></div><strong>18%</strong></div>
+                    <div class="intent-row"><span>工具调用</span><div><i style="width:12%"></i></div><strong>12%</strong></div>
+                  </div>
+                  <div class="chain-note">
+                    <span class="chain-node"><svg><use href="#i-search"></use></svg>混合召回</span>
+                    <i></i><span class="chain-node"><svg><use href="#i-layers"></use></svg>交叉编码重排</span>
+                    <i></i><span class="chain-node is-gold"><svg><use href="#i-spark"></use></svg>上下文压缩</span>
+                  </div>
+                </div>
+                <div class="compression-block">
+                  <span class="block-label">上下文压缩</span>
+                  <div class="compression-number"><strong id="compressionValue">38.6</strong><span>%</span></div>
+                  <p>平均输入长度节省，法条与引用锚点保持原样。</p>
+                  <div class="meter"><span id="compressionMeter" style="width:38.6%"></span></div>
+                  <div class="kv-list">
+                    <div><span>引用保真校验</span><strong class="is-ok"><svg><use href="#i-check"></use></svg>100%</strong></div>
+                    <div><span>压缩失败回退</span><strong>原文返回</strong></div>
+                    <div><span>缓存命中</span><strong>64.2%</strong></div>
+                  </div>
+                </div>
+              </div>
+              <div class="card-foot">
+                <span><i class="status-dot is-ok"></i>链路健康 · 最近 1 小时无降级</span>
+                <a href="/docs#/default/retrieve_api_v1_retrieve_post" target="_blank" rel="noreferrer">查看接口定义<svg><use href="#i-arrow-up-right"></use></svg></a>
+              </div>
+            </article>
+
+            <article class="card health-card">
+              <div class="card-head">
+                <div>
+                  <span class="card-kicker">GOVERNANCE HEALTH</span>
+                  <h2>治理健康度</h2>
+                </div>
+                <span class="badge badge-gold">良好</span>
+              </div>
+              <div class="health-body">
+                <div class="score-ring" style="--score: 92">
+                  <div><strong id="healthScore">92</strong><span>/ 100</span></div>
+                </div>
+                <div class="health-metrics">
+                  <div><span>事件处理率</span><strong id="healthEvents">98.7%</strong><div class="micro-meter"><i style="width:98.7%"></i></div></div>
+                  <div><span>标注一致率</span><strong id="healthAgreement">91.4%</strong><div class="micro-meter"><i style="width:91.4%"></i></div></div>
+                  <div><span>坏案例关闭率</span><strong id="healthCases">78.0%</strong><div class="micro-meter"><i style="width:78%"></i></div></div>
+                </div>
+              </div>
+              <div class="health-insight">
+                <svg><use href="#i-spark"></use></svg>
+                <p><strong>较上周提升 4 分。</strong>反馈覆盖率和评测通过率同步上升，建议继续关注 9 个未关闭坏案例。</p>
+              </div>
+            </article>
+          </div>
+
+          <div class="section-grid">
+            <article class="card capability-card">
+              <div class="card-head">
+                <div>
+                  <span class="card-kicker">CAPABILITY MATRIX</span>
+                  <h2>能力矩阵</h2>
+                </div>
+                <button class="text-btn" type="button" data-route="capabilities">全部能力<svg><use href="#i-arrow-up-right"></use></svg></button>
+              </div>
+              <div class="capability-strip" id="capabilityStrip">
+                <button class="capability-mini" type="button" data-route="capabilities">
+                  <span class="cap-icon is-blue"><svg><use href="#i-cpu"></use></svg></span>
+                  <span class="cap-copy"><strong>统一模型推理</strong><small>多模型路由 · 流式响应</small></span>
+                  <span class="cap-state"><i></i>运行中</span>
+                </button>
+                <button class="capability-mini" type="button" data-route="capabilities">
+                  <span class="cap-icon is-gold"><svg><use href="#i-book"></use></svg></span>
+                  <span class="cap-copy"><strong>公共法律检索</strong><small>混合召回 · 引用溯源</small></span>
+                  <span class="cap-state"><i></i>运行中</span>
+                </button>
+                <button class="capability-mini" type="button" data-route="capabilities">
+                  <span class="cap-icon is-teal"><svg><use href="#i-tool"></use></svg></span>
+                  <span class="cap-copy"><strong>司法工具集</strong><small>MCP 协议 · 统一审计</small></span>
+                  <span class="cap-state"><i></i>运行中</span>
+                </button>
+                <button class="capability-mini" type="button" data-route="governance">
+                  <span class="cap-icon is-ink"><svg><use href="#i-shield"></use></svg></span>
+                  <span class="cap-copy"><strong>数据治理闭环</strong><small>标注 · 评测 · 保留</small></span>
+                  <span class="cap-state is-beta"><i></i>试运行</span>
+                </button>
+              </div>
+            </article>
+
+            <article class="card event-card">
+              <div class="card-head">
+                <div>
+                  <span class="card-kicker">RECENT ACTIVITY</span>
+                  <h2>最近事件</h2>
+                </div>
+                <button class="text-btn" type="button" data-route="governance">全部事件<svg><use href="#i-arrow-up-right"></use></svg></button>
+              </div>
+              <div class="event-list" id="homeEventList">
+                <div class="event-item">
+                  <span class="event-icon is-ok"><svg><use href="#i-check"></use></svg></span>
+                  <div><strong>检索完成 · 民间借贷利率上限</strong><span>kb_statutes · 8 条结果 · 压缩 41%</span></div>
+                  <time>刚刚</time>
+                </div>
+                <div class="event-item">
+                  <span class="event-icon is-blue"><svg><use href="#i-cpu"></use></svg></span>
+                  <div><strong>模型推理 · 裁判文书摘要</strong><span>qwen-judicial · 1,284 tokens · 462ms</span></div>
+                  <time>2 分钟</time>
+                </div>
+                <div class="event-item">
+                  <span class="event-icon is-gold"><svg><use href="#i-alert"></use></svg></span>
+                  <div><strong>评测任务待复核</strong><span>eval_20261020_03 · 12 条低分样本</span></div>
+                  <time>9 分钟</time>
+                </div>
+                <div class="event-item">
+                  <span class="event-icon is-teal"><svg><use href="#i-tool"></use></svg></span>
+                  <div><strong>MCP 工具调用 · 案件要素抽取</strong><span>case.extract_elements · 成功</span></div>
+                  <time>16 分钟</time>
+                </div>
+              </div>
+            </article>
+          </div>
+
+          <footer class="page-foot">
+            <span>司法 AI 中台 · 本地部署</span>
+            <span class="foot-dot"></span>
+            <span>数据不出域</span>
+            <span class="foot-dot"></span>
+            <span>全链路审计留痕</span>
+            <span class="foot-version">v0.1.0</span>
+          </footer>
+        </section>
+
+        <section class="page" id="page-capabilities" data-page="capabilities" hidden>
+          <header class="page-heading">
+            <div>
+              <span class="page-kicker">CAPABILITY GATEWAY</span>
+              <h1>能力网关</h1>
+              <p>统一注册、发布与授权模型、检索和工具能力。版本可回滚，调用可追踪。</p>
+            </div>
+            <div class="heading-actions">
+              <button class="btn btn-quiet" type="button" data-open-capability-create><svg><use href="#i-grid"></use></svg>新建能力</button>
+              <button class="btn btn-primary" type="button" id="refreshCapabilities"><svg><use href="#i-refresh"></use></svg>刷新数据</button>
+            </div>
+          </header>
+
+          <div class="mini-stats">
+            <div><span>能力总数</span><strong id="capTotal">4</strong><em>个</em></div>
+            <div><span>运行中</span><strong id="capActive">3</strong><em>个</em></div>
+            <div><span>本月调用</span><strong>128.4</strong><em>万</em></div>
+            <div><span>平均成功率</span><strong>99.2</strong><em>%</em></div>
+          </div>
+
+          <article class="card table-card">
+            <div class="table-toolbar">
+              <label class="field-search">
+                <svg><use href="#i-search"></use></svg>
+                <input type="search" id="capabilitySearch" placeholder="搜索能力名称、编码或负责人" autocomplete="off">
+              </label>
+              <div class="toolbar-right">
+                <label class="select-wrap">
+                  <svg><use href="#i-filter"></use></svg>
+                  <select id="capabilityType">
+                    <option value="">全部类型</option>
+                    <option value="MODEL">模型</option>
+                    <option value="RAG">检索</option>
+                    <option value="MCP">工具</option>
+                    <option value="GOVERNANCE">治理</option>
+                  </select>
+                </label>
+                <span class="result-count" id="capabilityCount">4 项能力</span>
+              </div>
+            </div>
+            <div class="table-scroll">
+              <table class="data-table">
+                <thead>
+                  <tr><th>能力</th><th>类型</th><th>状态</th><th>默认版本</th><th>负责人</th><th class="align-right">操作</th></tr>
+                </thead>
+                <tbody id="capabilityRows"></tbody>
+              </table>
+            </div>
+            <div class="empty-state" id="capabilityEmpty" hidden>
+              <svg><use href="#i-search"></use></svg>
+              <strong>没有匹配的能力</strong>
+              <span>尝试调整搜索关键词或类型筛选。</span>
+            </div>
+          </article>
+
+          <div class="info-banner">
+            <svg><use href="#i-shield"></use></svg>
+            <div><strong>授权优先，默认拒绝</strong><span>应用调用能力前需完成授权绑定。未授权请求将在网关层被拦截，不进入模型或检索链路。</span></div>
+            <a href="/docs" target="_blank" rel="noreferrer">了解授权模型<svg><use href="#i-arrow-up-right"></use></svg></a>
+          </div>
+        </section>
+
+        <section class="page" id="page-retrieval" data-page="retrieval" hidden>
+          <header class="page-heading">
+            <div>
+              <span class="page-kicker">RETRIEVAL LAB</span>
+              <h1>知识检索</h1>
+              <p>面向法律文本的混合召回、引用溯源与上下文压缩。先验证证据，再交给模型。</p>
+            </div>
+            <div class="heading-actions">
+              <span class="badge badge-soft"><i class="status-dot is-ok"></i>引用保真已开启</span>
+              <button class="btn btn-quiet" type="button" data-open-kb-create><svg><use href="#i-database"></use></svg>新建知识库</button>
+              <button class="btn btn-primary" type="button" data-open-document><svg><use href="#i-upload"></use></svg>上传文档</button>
+            </div>
+          </header>
+
+          <div class="retrieval-layout">
+            <article class="card composer-card">
+              <div class="composer-head">
+                <div><span class="card-kicker">QUERY COMPOSER</span><h2>检索实验台</h2></div>
+                <span class="key-hint">Ctrl Enter 运行</span>
+              </div>
+              <form id="retrievalForm">
+                <label class="sr-only" for="retrievalQuery">检索问题</label>
+                <textarea id="retrievalQuery" rows="5" spellcheck="false">民间借贷利率超过一年期 LPR 四倍，法院是否支持超出部分的利息？</textarea>
+                <div class="composer-options">
+                  <div class="kb-picker">
+                    <span class="option-label">知识库</span>
+                    <div class="chip-group" id="kbChips">
+                      <button class="chip is-selected" type="button" data-kb-id="1"><i></i>法律法规库</button>
+                      <button class="chip is-selected" type="button" data-kb-id="2"><i></i>指导性案例库</button>
+                      <button class="chip" type="button" data-kb-id="3"><i></i>诉讼程序指引</button>
+                    </div>
+                  </div>
+                  <div class="option-row">
+                    <label class="inline-field">Top K
+                      <select id="retrievalTopK"><option>5</option><option selected>8</option><option>10</option><option>20</option></select>
+                    </label>
+                    <label class="switch-field">
+                      <span>压缩上下文</span>
+                      <input type="checkbox" id="retrievalCompress" checked>
+                      <i class="switch" aria-hidden="true"></i>
+                    </label>
+                  </div>
+                </div>
+                <div class="composer-foot">
+                  <span class="composer-note" id="retrievalHint"><svg><use href="#i-lock"></use></svg>未连接应用令牌时展示预览结果</span>
+                  <button class="btn btn-primary" type="submit" id="runRetrieval"><svg><use href="#i-search"></use></svg>运行检索</button>
+                </div>
+              </form>
+            </article>
+
+            <aside class="side-stack">
+              <article class="card side-card">
+                <div class="card-head compact">
+                  <div><span class="card-kicker">KNOWLEDGE BASES</span><h2>知识库</h2></div>
+                  <span class="badge badge-soft" id="kbCount">3</span>
+                </div>
+                <div class="kb-list" id="kbList">
+                  <div class="kb-item">
+                    <span class="kb-icon"><svg><use href="#i-book"></use></svg></span>
+                    <div><strong>法律法规库</strong><span>18,420 个切片 · 内部</span></div>
+                    <i class="status-dot is-ok"></i>
+                  </div>
+                  <div class="kb-item">
+                    <span class="kb-icon is-gold"><svg><use href="#i-book"></use></svg></span>
+                    <div><strong>指导性案例库</strong><span>6,230 个切片 · 机密</span></div>
+                    <i class="status-dot is-ok"></i>
+                  </div>
+                  <div class="kb-item">
+                    <span class="kb-icon is-teal"><svg><use href="#i-book"></use></svg></span>
+                    <div><strong>诉讼程序指引</strong><span>1,580 个切片 · 内部</span></div>
+                    <i class="status-dot is-warn"></i>
+                  </div>
+                </div>
+              </article>
+
+              <article class="card side-card compression-side">
+                <div class="card-head compact">
+                  <div><span class="card-kicker">COMPRESSION</span><h2>压缩策略</h2></div>
+                  <svg class="card-glyph"><use href="#i-spark"></use></svg>
+                </div>
+                <p>按意图动态分配上下文预算，保留法条、金额、日期与案号锚点。</p>
+                <div class="compression-kpis">
+                  <div><strong>38.6%</strong><span>平均节省</span></div>
+                  <div><strong>100%</strong><span>引用保真</span></div>
+                </div>
+                <ul class="plain-list">
+                  <li><svg><use href="#i-check"></use></svg>引用完整性校验失败时回退原文</li>
+                  <li><svg><use href="#i-check"></use></svg>Top-N 结果恢复为完整切片</li>
+                  <li><svg><use href="#i-check"></use></svg>压缩请求默认关闭，按需开启</li>
+                </ul>
+              </article>
+            </aside>
+          </div>
+
+          <article class="card results-card" id="retrievalResults">
+            <div class="results-head">
+              <div><span class="card-kicker">RESULTS</span><h2>证据预览</h2></div>
+              <div class="result-meta" id="retrievalMeta"><span>3 条证据</span><i></i><span>耗时 312ms</span><i></i><span>压缩 41%</span></div>
+            </div>
+            <div class="result-list">
+              <article class="result-item">
+                <div class="result-index">01</div>
+                <div class="result-main">
+                  <div class="result-title"><strong>最高人民法院关于审理民间借贷案件适用法律若干问题的规定</strong><span class="badge badge-gold">法条</span></div>
+                  <p>出借人请求借款人按照合同约定利率支付利息的，人民法院应予支持，但是双方约定的利率超过合同成立时一年期贷款市场报价利率四倍的除外。</p>
+                  <div class="result-foot"><span>第二十五条</span><i></i><span>法律法规库</span><i></i><span class="score">相关度 0.942</span></div>
+                </div>
+                <button class="icon-btn result-link" type="button" aria-label="复制引用" data-copy="《最高人民法院关于审理民间借贷案件适用法律若干问题的规定》第二十五条"><svg><use href="#i-copy"></use></svg></button>
+              </article>
+              <article class="result-item">
+                <div class="result-index">02</div>
+                <div class="result-main">
+                  <div class="result-title"><strong>某小额贷款公司与王某借款合同纠纷案</strong><span class="badge badge-soft">案例</span></div>
+                  <p>双方约定的年利率超过合同成立时一年期 LPR 的四倍，超出部分不受法律保护。借款人已支付超出部分利息的，可请求返还或抵扣本金。</p>
+                  <div class="result-foot"><span>（2025）民再 118 号</span><i></i><span>指导性案例库</span><i></i><span class="score">相关度 0.907</span></div>
+                </div>
+                <button class="icon-btn result-link" type="button" aria-label="复制引用" data-copy="某小额贷款公司与王某借款合同纠纷案，（2025）民再 118 号"><svg><use href="#i-copy"></use></svg></button>
+              </article>
+              <article class="result-item">
+                <div class="result-index">03</div>
+                <div class="result-main">
+                  <div class="result-title"><strong>全国法院民商事审判工作会议纪要</strong><span class="badge badge-soft">纪要</span></div>
+                  <p>人民法院在民间借贷纠纷案件审理中，应当严格适用利率上限规则，防止变相高利贷，并注意区分借款本金与各类费用。</p>
+                  <div class="result-foot"><span>第 51 条</span><i></i><span>法律法规库</span><i></i><span class="score">相关度 0.864</span></div>
+                </div>
+                <button class="icon-btn result-link" type="button" aria-label="复制引用" data-copy="《全国法院民商事审判工作会议纪要》第 51 条"><svg><use href="#i-copy"></use></svg></button>
+              </article>
+            </div>
+            <div class="results-foot">
+              <span><svg><use href="#i-check"></use></svg>引用完整性校验通过</span>
+              <span>决策意图：法条检索 · 置信度 0.93</span>
+            </div>
+          </article>
+        </section>
+
+        <section class="page" id="page-governance" data-page="governance" hidden>
+          <header class="page-heading">
+            <div>
+              <span class="page-kicker">DATA GOVERNANCE</span>
+              <h1>数据治理</h1>
+              <p>从调用事件到标注、评测和数据版本，形成可回放、可度量的治理闭环。</p>
+            </div>
+            <div class="heading-actions">
+              <button class="btn btn-quiet" type="button" id="refreshGovernance"><svg><use href="#i-refresh"></use></svg>刷新态势</button>
+              <button class="btn btn-quiet" type="button" data-open-annotation><svg><use href="#i-check"></use></svg>标注任务</button>
+              <button class="btn btn-quiet" type="button" data-open-eval><svg><use href="#i-activity"></use></svg>新建评测</button>
+              <button class="btn btn-primary" type="button" data-open-retention><svg><use href="#i-database"></use></svg>保留任务</button>
+            </div>
+          </header>
+
+          <div class="metric-grid">
+            <article class="metric-card">
+              <span>治理事件</span>
+              <strong id="govEvents">12,847</strong>
+              <div class="metric-foot"><em class="is-up">+9.6%</em><span>较上周</span></div>
+              <div class="spark" data-spark="44,48,53,51,57,62,60,68,72,70,78,84"></div>
+            </article>
+            <article class="metric-card">
+              <span>反馈正率</span>
+              <strong id="govFeedback">91.4%</strong>
+              <div class="metric-foot"><em class="is-up">+1.8%</em><span>有效反馈 2,184</span></div>
+              <div class="spark" data-spark="52,54,50,58,57,61,65,63,69,72,70,76"></div>
+            </article>
+            <article class="metric-card">
+              <span>标注一致率</span>
+              <strong id="govAgreement">91.4%</strong>
+              <div class="metric-foot"><em class="is-up">+2.4%</em><span>Kappa 0.81</span></div>
+              <div class="spark" data-spark="40,46,45,51,55,52,61,64,62,70,74,78"></div>
+            </article>
+            <article class="metric-card">
+              <span>坏案例关闭率</span>
+              <strong id="govCases">78.0%</strong>
+              <div class="metric-foot"><em class="is-down">-3.2%</em><span>剩余 9 个</span></div>
+              <div class="spark" data-spark="82,80,78,81,76,74,77,72,70,69,67,65"></div>
+            </article>
+          </div>
+
+          <div class="section-grid governance-grid">
+            <article class="card event-stream-card">
+              <div class="card-head">
+                <div><span class="card-kicker">EVENT STREAM</span><h2>事件流</h2></div>
+                <div class="segmented" role="group" aria-label="事件状态筛选">
+                  <button class="is-active" type="button" data-event-filter="">全部</button>
+                  <button type="button" data-event-filter="NEW">待处理</button>
+                  <button type="button" data-event-filter="PROCESSED">已处理</button>
+                </div>
+              </div>
+              <div class="event-table" id="governanceEventList">
+                <div class="event-table-head"><span>事件</span><span>状态</span><span>时间</span></div>
+                <div class="event-table-row"><span><i class="event-dot is-blue"></i><strong>检索完成</strong><small>民间借贷利率上限 · 8 条结果</small></span><span class="status-pill is-ok">SUCCESS</span><time>刚刚</time></div>
+                <div class="event-table-row"><span><i class="event-dot is-gold"></i><strong>评测任务</strong><small>eval_20261020_03 · 低分样本 12 条</small></span><span class="status-pill is-warn">NEW</span><time>9 分钟前</time></div>
+                <div class="event-table-row"><span><i class="event-dot is-teal"></i><strong>标注提交</strong><small>task_021 · 5 条记录</small></span><span class="status-pill is-ok">PROCESSED</span><time>18 分钟前</time></div>
+                <div class="event-table-row"><span><i class="event-dot is-blue"></i><strong>模型推理</strong><small>裁判文书摘要 · 1,284 tokens</small></span><span class="status-pill is-ok">SUCCESS</span><time>24 分钟前</time></div>
+                <div class="event-table-row"><span><i class="event-dot is-rose"></i><strong>反馈提交</strong><small>请求 req_8f2a · 负向反馈</small></span><span class="status-pill is-rose">NEW</span><time>31 分钟前</time></div>
+              </div>
+              <div class="card-foot"><span><i class="status-dot is-ok"></i>队列消费正常</span><button class="text-btn" type="button" id="processEvents">处理待办<svg><use href="#i-arrow-right"></use></svg></button></div>
+            </article>
+
+            <article class="card quality-panel">
+              <div class="card-head">
+                <div><span class="card-kicker">DATA QUALITY</span><h2>数据质量</h2></div>
+                <span class="badge badge-gold">91.0 分</span>
+              </div>
+              <div class="quality-score-row">
+                <div class="score-ring is-small" style="--score: 91"><div><strong>91</strong><span>分</span></div></div>
+                <div><strong id="qualityTotal">5,602</strong><span>条数据集条目</span><small>已发布版本 14 / 21</small></div>
+              </div>
+              <div class="quality-bars">
+                <div><span>已通过</span><div><i style="width:77%"></i></div><strong>4,320</strong></div>
+                <div><span>待复核</span><div><i class="is-gold" style="width:2.1%"></i></div><strong>120</strong></div>
+                <div><span>已驳回</span><div><i class="is-rose" style="width:0.7%"></i></div><strong>42</strong></div>
+              </div>
+              <div class="quality-note"><svg><use href="#i-spark"></use></svg><span>质量分较上月提升 <strong>3.6</strong> 分，标注一致率是主要贡献项。</span></div>
+            </article>
+          </div>
+
+          <div class="section-grid governance-grid">
+            <article class="card">
+              <div class="card-head"><div><span class="card-kicker">FEEDBACK LOOP</span><h2>反馈闭环</h2></div><span class="badge badge-soft">近 30 天</span></div>
+              <div class="feedback-layout">
+                <div class="feedback-score"><strong id="feedbackRate">91.4</strong><span>% 正向</span><small>1,996 / 2,184 条有效反馈</small></div>
+                <div class="feedback-bars">
+                  <div><span>正向</span><i style="width:91.4%"></i><strong>1,996</strong></div>
+                  <div><span>负向</span><i class="is-rose" style="width:8.6%"></i><strong>188</strong></div>
+                </div>
+              </div>
+            </article>
+            <article class="card">
+              <div class="card-head"><div><span class="card-kicker">RETENTION</span><h2>数据保留</h2></div><span class="badge badge-soft">策略生效中</span></div>
+              <div class="retention-list">
+                <div><span>调用事件</span><strong>180 天</strong><em>自动清理</em></div>
+                <div><span>反馈记录</span><strong>365 天</strong><em>自动清理</em></div>
+                <div><span>审计日志</span><strong>3 年</strong><em>只读归档</em></div>
+                <div><span>敏感字段</span><strong>已脱敏</strong><em>落库前处理</em></div>
+              </div>
+            </article>
+          </div>
+        </section>
+
+        <section class="page" id="page-settings" data-page="settings" hidden>
+          <header class="page-heading">
+            <div>
+              <span class="page-kicker">PLATFORM SETTINGS</span>
+              <h1>系统设置</h1>
+              <p>连接平台、查看决策引擎与压缩策略。令牌仅保存在当前浏览器会话。</p>
+            </div>
+            <div class="heading-actions">
+              <a class="btn btn-quiet" href="/docs" target="_blank" rel="noreferrer"><svg><use href="#i-link"></use></svg>打开 API 文档</a>
+            </div>
+          </header>
+
+          <div class="settings-grid">
+            <article class="card settings-card connection-card">
+              <div class="card-head">
+                <div><span class="card-kicker">CONNECTION</span><h2>平台连接</h2></div>
+                <span class="status-pill is-ok" id="connectionStatus">示例数据</span>
+              </div>
+              <p>连接后，控制台将读取真实的能力、知识库、治理指标与事件流。</p>
+              <dl class="settings-list">
+                <div><dt>API 地址</dt><dd id="settingsBaseUrl">当前源</dd></div>
+                <div><dt>管理令牌</dt><dd id="adminTokenState">未配置</dd></div>
+                <div><dt>应用令牌</dt><dd id="appTokenState">未配置</dd></div>
+                <div><dt>运行环境</dt><dd><span class="status-dot is-ok"></span>本地 / 内网</dd></div>
+              </dl>
+              <div class="settings-actions">
+                <button class="btn btn-primary" type="button" data-open-token><svg><use href="#i-lock"></use></svg>管理连接</button>
+                <button class="btn btn-quiet" type="button" id="disconnectBtn">断开并清除</button>
+              </div>
+            </article>
+
+            <article class="card settings-card">
+              <div class="card-head"><div><span class="card-kicker">DECISION ENGINE</span><h2>决策引擎</h2></div><span class="badge badge-gold">安全优先</span></div>
+              <div class="engine-row">
+                <div class="engine-icon is-ink"><svg><use href="#i-shield"></use></svg></div>
+                <div><strong>规则引擎</strong><span>默认主路径 · 始终兜底</span></div>
+                <span class="status-pill is-ok">ACTIVE</span>
+              </div>
+              <div class="engine-row">
+                <div class="engine-icon is-gold"><svg><use href="#i-spark"></use></svg></div>
+                <div><strong>JEV 影子模式</strong><span>仅旁路观察 · 不参与主链路</span></div>
+                <span class="status-pill is-warn">SHADOW</span>
+              </div>
+              <div class="engine-row">
+                <div class="engine-icon is-blue"><svg><use href="#i-refresh"></use></svg></div>
+                <div><strong>失败回退</strong><span>超时或异常时回退规则</span></div>
+                <span class="status-pill is-ok">60s 熔断</span>
+              </div>
+              <div class="settings-note"><svg><use href="#i-lock"></use></svg><span>外部请求默认脱敏，不发送原始身份信息。</span></div>
+            </article>
+
+            <article class="card settings-card">
+              <div class="card-head"><div><span class="card-kicker">COMPRESSION</span><h2>上下文压缩</h2></div><span class="badge badge-soft">ReFRAG-style</span></div>
+              <div class="compression-setting">
+                <div class="setting-row"><span>请求级开关</span><strong>compress</strong><em>默认关闭</em></div>
+                <div class="setting-row"><span>默认预算</span><strong>6,000</strong><em>字符</em></div>
+                <div class="setting-row"><span>锚点保护</span><strong>法条 / 金额 / 日期 / 案号</strong><em>强制</em></div>
+                <div class="setting-row"><span>完整性校验</span><strong>失败回退原文</strong><em>开启</em></div>
+              </div>
+              <div class="settings-note"><svg><use href="#i-spark"></use></svg><span>压缩仅作用于检索结果，不改变引用编号与证据顺序。</span></div>
+            </article>
+
+            <article class="card settings-card env-card">
+              <div class="card-head"><div><span class="card-kicker">DEPLOYMENT</span><h2>部署信息</h2></div><span class="badge badge-soft">v0.1.0</span></div>
+              <dl class="settings-list">
+                <div><dt>运行模式</dt><dd>私有化 / 单机</dd></div>
+                <div><dt>数据存储</dt><dd>SQLite · 本地</dd></div>
+                <div><dt>缓存</dt><dd>进程内 LRU</dd></div>
+                <div><dt>模型接入</dt><dd>Mock / OpenAI 兼容</dd></div>
+              </dl>
+              <div class="env-links">
+                <a href="/healthz" target="_blank" rel="noreferrer">健康检查<svg><use href="#i-arrow-up-right"></use></svg></a>
+                <a href="/docs" target="_blank" rel="noreferrer">OpenAPI<svg><use href="#i-arrow-up-right"></use></svg></a>
+                <a href="/api/v1/capabilities" target="_blank" rel="noreferrer">能力发现<svg><use href="#i-arrow-up-right"></use></svg></a>
+              </div>
+            </article>
+          </div>
+
+          <article class="card callout-card">
+            <div class="callout-mark">!</div>
+            <div><strong>生产启用 JEV 前必须完成合规评估</strong><p>公开文档显示 JEV 为境外云 API，零数据保留仅面向企业版，且中文司法意图准确率尚未验证。当前仅建议影子模式评估。</p></div>
+            <a href="/docs" target="_blank" rel="noreferrer">查看部署说明<svg><use href="#i-arrow-up-right"></use></svg></a>
+          </article>
+        </section>
+
+        <footer class="global-foot">
+          <span>司法 AI 中台</span><i></i><span>统一接入 · 安全可控 · 全程可审计</span>
+          <span class="global-foot-right">本地时间 <time id="clockLabel">--:--:--</time></span>
+        </footer>
+      </div>
+    </main>
+  </div>
+
+  <div class="command-overlay" id="commandPalette" hidden>
+    <div class="command-backdrop" data-close-command></div>
+    <div class="command-panel" role="dialog" aria-modal="true" aria-labelledby="commandTitle">
+      <div class="command-input">
+        <svg><use href="#i-search"></use></svg>
+        <input id="commandInput" type="text" placeholder="搜索页面或操作…" autocomplete="off" aria-label="搜索页面或操作">
+        <kbd>ESC</kbd>
+      </div>
+      <div class="command-results" id="commandResults"></div>
+      <div class="command-foot"><span><kbd>↑</kbd><kbd>↓</kbd> 选择</span><span><kbd>↵</kbd> 打开</span><span><kbd>ESC</kbd> 关闭</span></div>
+    </div>
+  </div>
+
+  <dialog class="token-dialog" id="tokenDialog" aria-labelledby="tokenTitle">
+    <form method="dialog" id="tokenForm">
+      <div class="dialog-head">
+        <div class="dialog-mark"><svg><use href="#i-lock"></use></svg></div>
+        <div><span class="page-kicker">CONNECTION</span><h2 id="tokenTitle">连接平台</h2></div>
+        <button class="icon-btn" type="button" data-close-token aria-label="关闭"><svg><use href="#i-close"></use></svg></button>
+      </div>
+      <p class="dialog-copy">令牌仅保存在当前浏览器会话（sessionStorage），不会写入服务端或日志。</p>
+      <label class="dialog-field">
+        <span>管理令牌 <em>用于能力、治理与事件数据</em></span>
+        <div class="input-with-icon"><svg><use href="#i-shield"></use></svg><input type="password" id="adminTokenInput" placeholder="Bearer Token" autocomplete="off" spellcheck="false"></div>
+      </label>
+      <label class="dialog-field">
+        <span>应用令牌 <em>可选，用于检索实验台</em></span>
+        <div class="input-with-icon"><svg><use href="#i-command"></use></svg><input type="password" id="appTokenInput" placeholder="应用 API Key" autocomplete="off" spellcheck="false"></div>
+      </label>
+      <div class="dialog-error" id="tokenError" hidden></div>
+      <div class="dialog-foot">
+        <span><i class="status-dot is-warn"></i>请使用专用令牌，避免共享管理员密钥</span>
+        <div>
+          <button class="btn btn-quiet" type="button" data-close-token>取消</button>
+          <button class="btn btn-primary" type="submit" id="connectBtn">验证并连接</button>
+        </div>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog class="token-dialog detail-dialog" id="capabilityDialog" aria-labelledby="capabilityDialogTitle">
+    <form method="dialog">
+      <div class="dialog-head">
+        <div class="dialog-mark" id="capabilityDialogIcon"><svg><use href="#i-grid"></use></svg></div>
+        <div><span class="page-kicker" id="capabilityDialogType">CAPABILITY</span><h2 id="capabilityDialogTitle">能力详情</h2></div>
+        <button class="icon-btn" type="button" data-close-capability aria-label="关闭"><svg><use href="#i-close"></use></svg></button>
+      </div>
+      <div class="detail-body" id="capabilityDialogBody"></div>
+      <div class="dialog-actions-row" id="capabilityDialogActions"></div>
+      <div class="dialog-foot">
+        <span><i class="status-dot is-ok"></i>默认拒绝 · 显式授权</span>
+        <div>
+          <a class="btn btn-quiet" href="/docs" target="_blank" rel="noreferrer">API 文档<svg><use href="#i-arrow-up-right"></use></svg></a>
+          <button class="btn btn-primary" type="button" data-close-capability>关闭</button>
+        </div>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog class="token-dialog form-dialog" id="capabilityCreateDialog" aria-labelledby="capabilityCreateTitle">
+    <form id="capabilityCreateForm">
+      <div class="dialog-head">
+        <div class="dialog-mark"><svg><use href="#i-grid"></use></svg></div>
+        <div><span class="page-kicker">NEW CAPABILITY</span><h2 id="capabilityCreateTitle">新建能力</h2></div>
+        <button class="icon-btn" type="button" data-close-dialog="capabilityCreateDialog" aria-label="关闭"><svg><use href="#i-close"></use></svg></button>
+      </div>
+      <p class="dialog-copy">创建能力与首个版本。发布后应用仍需显式授权才能调用。</p>
+      <div class="form-grid">
+        <label class="dialog-field"><span>能力编码</span><input id="capCode" required pattern="[a-z][a-z0-9_.-]{2,127}" placeholder="rag.legal.retrieve"></label>
+        <label class="dialog-field"><span>能力名称</span><input id="capName" required maxlength="128" placeholder="法律检索"></label>
+        <label class="dialog-field"><span>能力类型</span><select id="capType"><option value="RAG_RETRIEVE">RAG 检索</option><option value="MODEL_CHAT">模型对话</option><option value="MODEL_EMBEDDING">Embedding</option><option value="MODEL_RERANK">Rerank</option><option value="MODEL_VISION">视觉 OCR</option><option value="MCP_TOOL">MCP 工具</option><option value="GRAPH_RETRIEVE">GraphRAG</option></select></label>
+        <label class="dialog-field"><span>负责人</span><input id="capOwner" required value="ai-platform"></label>
+        <label class="dialog-field"><span>初始版本</span><input id="capVersion" required value="1.0.0" pattern="\d+\.\d+\.\d+"></label>
+        <label class="dialog-field"><span>协议</span><select id="capProtocol"><option value="PLATFORM">PLATFORM</option><option value="OPENAI">OPENAI</option><option value="MCP">MCP</option></select></label>
+        <label class="dialog-field"><span>模型名 / Adapter</span><input id="capModelName" placeholder="qwen-judicial"></label>
+        <label class="dialog-field"><span>QPS 限制</span><input id="capQps" type="number" min="1" value="20"></label>
+        <label class="dialog-field form-full"><span>描述</span><textarea id="capDescription" rows="3" placeholder="说明能力边界、输入输出与适用场景"></textarea></label>
+        <label class="dialog-field form-full"><span>标签 <em>逗号分隔</em></span><input id="capTags" placeholder="RAG, 法条, 引用"></label>
+      </div>
+      <label class="dialog-check"><input type="checkbox" id="capPublish" checked><span>创建后立即发布为默认版本</span></label>
+      <div class="dialog-error" id="capCreateError" hidden></div>
+      <div class="dialog-foot">
+        <span><i class="status-dot is-ok"></i>创建动作会写入审计日志</span>
+        <div><button class="btn btn-quiet" type="button" data-close-dialog="capabilityCreateDialog">取消</button><button class="btn btn-primary" type="submit" id="capCreateSubmit">创建能力</button></div>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog class="token-dialog form-dialog" id="grantDialog" aria-labelledby="grantTitle">
+    <form id="grantForm">
+      <div class="dialog-head">
+        <div class="dialog-mark"><svg><use href="#i-lock"></use></svg></div>
+        <div><span class="page-kicker">CAPABILITY GRANT</span><h2 id="grantTitle">授权能力</h2></div>
+        <button class="icon-btn" type="button" data-close-dialog="grantDialog" aria-label="关闭"><svg><use href="#i-close"></use></svg></button>
+      </div>
+      <p class="dialog-copy" id="grantContext">为应用授予能力调用权限。</p>
+      <div class="form-grid">
+        <label class="dialog-field"><span>应用</span><select id="grantApp" required></select></label>
+        <label class="dialog-field"><span>环境</span><select id="grantEnv"><option value="prod">prod</option><option value="staging">staging</option><option value="dev">dev</option><option value="*">全部环境</option></select></label>
+        <label class="dialog-field"><span>版本 <em>留空表示全部版本</em></span><input id="grantVersion" placeholder="1.0.0"></label>
+        <label class="dialog-field"><span>QPS 配额 <em>可选</em></span><input id="grantQps" type="number" min="1" placeholder="20"></label>
+        <label class="dialog-field form-full"><span>数据范围 KB ID <em>可选，逗号分隔</em></span><input id="grantKbIds" placeholder="12, 13"></label>
+      </div>
+      <div class="grant-list" id="grantList"></div>
+      <div class="dialog-error" id="grantError" hidden></div>
+      <div class="dialog-foot">
+        <span><i class="status-dot is-warn"></i>授权变更会立即影响调用</span>
+        <div><button class="btn btn-quiet" type="button" data-close-dialog="grantDialog">取消</button><button class="btn btn-primary" type="submit" id="grantSubmit">授权</button></div>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog class="token-dialog form-dialog" id="kbCreateDialog" aria-labelledby="kbCreateTitle">
+    <form id="kbCreateForm">
+      <div class="dialog-head">
+        <div class="dialog-mark"><svg><use href="#i-database"></use></svg></div>
+        <div><span class="page-kicker">NEW KNOWLEDGE BASE</span><h2 id="kbCreateTitle">新建知识库</h2></div>
+        <button class="icon-btn" type="button" data-close-dialog="kbCreateDialog" aria-label="关闭"><svg><use href="#i-close"></use></svg></button>
+      </div>
+      <p class="dialog-copy">知识库按租户隔离，文档入库后需构建索引才能被检索。</p>
+      <div class="form-grid">
+        <label class="dialog-field"><span>知识库编码</span><input id="kbCode" required pattern="[a-z0-9][a-z0-9_-]{1,63}" placeholder="kb_statutes_v2"></label>
+        <label class="dialog-field"><span>知识库名称</span><input id="kbName" required maxlength="128" placeholder="法律法规库"></label>
+        <label class="dialog-field"><span>所属租户</span><select id="kbTenant" required></select></label>
+        <label class="dialog-field"><span>负责人</span><input id="kbOwner" value="ai-platform"></label>
+        <label class="dialog-field"><span>领域</span><input id="kbDomain" placeholder="law / case / procedure"></label>
+        <label class="dialog-field"><span>安全级别</span><select id="kbSecurity"><option value="INTERNAL">内部</option><option value="CONFIDENTIAL">机密</option><option value="PUBLIC">公开</option></select></label>
+        <label class="dialog-field form-full"><span>描述</span><textarea id="kbDescription" rows="2"></textarea></label>
+      </div>
+      <div class="dialog-error" id="kbCreateError" hidden></div>
+      <div class="dialog-foot">
+        <span><i class="status-dot is-ok"></i>索引构建可异步执行</span>
+        <div><button class="btn btn-quiet" type="button" data-close-dialog="kbCreateDialog">取消</button><button class="btn btn-primary" type="submit" id="kbCreateSubmit">创建知识库</button></div>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog class="token-dialog form-dialog" id="documentDialog" aria-labelledby="documentTitle">
+    <form id="documentForm">
+      <div class="dialog-head">
+        <div class="dialog-mark"><svg><use href="#i-upload"></use></svg></div>
+        <div><span class="page-kicker">INGEST DOCUMENT</span><h2 id="documentTitle">上传文档</h2></div>
+        <button class="icon-btn" type="button" data-close-dialog="documentDialog" aria-label="关闭"><svg><use href="#i-close"></use></svg></button>
+      </div>
+      <p class="dialog-copy">支持纯文本、PDF、DOCX。上传后可选择立即构建索引。</p>
+      <div class="form-grid">
+        <label class="dialog-field"><span>目标知识库</span><select id="documentKb" required></select></label>
+        <label class="dialog-field"><span>安全级别</span><select id="documentSecurity"><option value="INTERNAL">内部</option><option value="CONFIDENTIAL">机密</option><option value="PUBLIC">公开</option></select></label>
+        <label class="dialog-field form-full"><span>标题</span><input id="documentTitleInput" placeholder="留空时使用文件名"></label>
+        <label class="dialog-field form-full"><span>选择文件 <em>PDF / DOCX / TXT</em></span><input id="documentFile" type="file" accept=".pdf,.docx,.txt,.md"></label>
+        <label class="dialog-field form-full"><span>或粘贴文本</span><textarea id="documentText" rows="5" placeholder="直接粘贴法律条文、案例或内部规范"></textarea></label>
+      </div>
+      <label class="dialog-check"><input type="checkbox" id="documentIndex" checked><span>上传完成后立即构建索引</span></label>
+      <div class="dialog-error" id="documentError" hidden></div>
+      <div class="dialog-foot">
+        <span><i class="status-dot is-warn"></i>重复内容会自动去重</span>
+        <div><button class="btn btn-quiet" type="button" data-close-dialog="documentDialog">取消</button><button class="btn btn-primary" type="submit" id="documentSubmit">开始入库</button></div>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog class="token-dialog form-dialog" id="evalDialog" aria-labelledby="evalTitle">
+    <form id="evalForm">
+      <div class="dialog-head">
+        <div class="dialog-mark"><svg><use href="#i-activity"></use></svg></div>
+        <div><span class="page-kicker">NEW EVALUATION</span><h2 id="evalTitle">新建评测</h2></div>
+        <button class="icon-btn" type="button" data-close-dialog="evalDialog" aria-label="关闭"><svg><use href="#i-close"></use></svg></button>
+      </div>
+      <p class="dialog-copy">评测任务会读取数据集版本，按目标类型计算指标并写入治理闭环。</p>
+      <div class="form-grid">
+        <label class="dialog-field"><span>数据集</span><select id="evalDataset" required></select></label>
+        <label class="dialog-field"><span>数据集版本</span><select id="evalDatasetVersion" required></select></label>
+        <label class="dialog-field"><span>目标类型</span><select id="evalTargetType"><option value="RAG">RAG</option><option value="MODEL">模型</option><option value="RETRIEVAL">检索</option><option value="AGENT">Agent</option></select></label>
+        <label class="dialog-field"><span>目标版本</span><input id="evalTargetVersion" required placeholder="v1.0.0"></label>
+        <label class="dialog-field"><span>Top K</span><input id="evalTopK" type="number" min="1" value="5"></label>
+        <label class="dialog-field"><span>通过阈值</span><input id="evalThreshold" type="number" min="0" max="1" step="0.01" value="0.8"></label>
+      </div>
+      <div class="dialog-error" id="evalError" hidden></div>
+      <div class="dialog-foot">
+        <span><i class="status-dot is-ok"></i>WORKER 模式下异步执行</span>
+        <div><button class="btn btn-quiet" type="button" data-close-dialog="evalDialog">取消</button><button class="btn btn-primary" type="submit" id="evalSubmit">创建评测</button></div>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog class="token-dialog form-dialog" id="annotationDialog" aria-labelledby="annotationTitle">
+    <form id="annotationForm">
+      <div class="dialog-head">
+        <div class="dialog-mark"><svg><use href="#i-check"></use></svg></div>
+        <div><span class="page-kicker">ANNOTATION TASK</span><h2 id="annotationTitle">创建标注任务</h2></div>
+        <button class="icon-btn" type="button" data-close-dialog="annotationDialog" aria-label="关闭"><svg><use href="#i-close"></use></svg></button>
+      </div>
+      <div class="form-grid">
+        <label class="dialog-field"><span>任务名称</span><input id="annotationName" required placeholder="法规引用一致性复核"></label>
+        <label class="dialog-field"><span>任务类型</span><select id="annotationType"><option value="CLASSIFICATION">分类</option><option value="EXTRACTION">抽取</option><option value="GENERATION">生成</option><option value="RETRIEVAL">检索</option><option value="QA">问答</option></select></label>
+        <label class="dialog-field"><span>条目数</span><input id="annotationTotal" type="number" min="1" value="20"></label>
+        <label class="dialog-field"><span>复核人数</span><input id="annotationReviewers" type="number" min="1" max="3" value="1"></label>
+        <label class="dialog-field"><span>负责人</span><input id="annotationAssignee" placeholder="reviewer-01"></label>
+        <label class="dialog-field"><span>截止时间</span><input id="annotationDue" type="datetime-local"></label>
+      </div>
+      <div class="dialog-error" id="annotationError" hidden></div>
+      <div class="dialog-foot">
+        <span><i class="status-dot is-ok"></i>支持双人复核与一致性统计</span>
+        <div><button class="btn btn-quiet" type="button" data-close-dialog="annotationDialog">取消</button><button class="btn btn-primary" type="submit" id="annotationSubmit">创建任务</button></div>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog class="token-dialog form-dialog" id="retentionDialog" aria-labelledby="retentionTitle">
+    <form id="retentionForm">
+      <div class="dialog-head">
+        <div class="dialog-mark"><svg><use href="#i-database"></use></svg></div>
+        <div><span class="page-kicker">RETENTION JOB</span><h2 id="retentionTitle">创建保留任务</h2></div>
+        <button class="icon-btn" type="button" data-close-dialog="retentionDialog" aria-label="关闭"><svg><use href="#i-close"></use></svg></button>
+      </div>
+      <p class="dialog-copy">保留任务会按租户执行。建议先使用 dry-run 查看影响范围。</p>
+      <div class="form-grid">
+        <label class="dialog-field"><span>租户</span><select id="retentionTenant" required></select></label>
+        <label class="dialog-field"><span>清理目标</span><select id="retentionTarget"><option value="AI_EVENT">调用事件</option><option value="FEEDBACK">反馈记录</option><option value="BAD_CASE">已关闭坏案例</option></select></label>
+        <label class="dialog-field form-full"><span>早于时间 <em>留空使用默认保留期</em></span><input id="retentionBefore" type="datetime-local"></label>
+      </div>
+      <label class="dialog-check"><input type="checkbox" id="retentionDryRun" checked><span>仅试运行，不实际删除</span></label>
+      <div class="dialog-error" id="retentionError" hidden></div>
+      <div class="dialog-foot">
+        <span><i class="status-dot is-warn"></i>删除操作不可逆</span>
+        <div><button class="btn btn-quiet" type="button" data-close-dialog="retentionDialog">取消</button><button class="btn btn-primary" type="submit" id="retentionSubmit">执行任务</button></div>
+      </div>
+    </form>
+  </dialog>
+
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+  <script src="/console/app.js?v=1" defer></script>
+</body>
+</html>

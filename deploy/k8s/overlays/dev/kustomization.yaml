@@ -1,0 +1,43 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: judicial-ai
+resources:
+  - ../../base
+patches:
+  - target:
+      kind: Deployment
+      name: judicial-ai-api
+    patch: |-
+      - op: replace
+        path: /spec/replicas
+        value: 1
+  - target:
+      kind: ConfigMap
+      name: judicial-ai-config
+    patch: |-
+      - op: replace
+        path: /data/APP_ENV
+        value: dev
+      - op: replace
+        path: /data/AUTH_MODE
+        value: token
+      - op: replace
+        path: /data/ALLOW_STATIC_ADMIN
+        value: "true"
+      - op: replace
+        path: /data/VECTOR_BACKEND
+        value: sql
+      - op: replace
+        path: /data/GRAPH_ENABLED
+        value: "false"
+      - op: replace
+        path: /data/DOCS_ENABLED
+        value: "true"
+      - op: replace
+        path: /data/AUTO_CREATE_SCHEMA
+        value: "true"
+images:
+  - name: judicial-ai-platform
+    newTag: dev
+  - name: judicial-ai-backup
+    newTag: dev

@@ -1,0 +1,19 @@
+{
+  "mcpServers": {
+    "filesystem": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "."],
+      "description": "只读/受限文件访问"
+    },
+    "git": {
+      "command": "uvx",
+      "args": ["mcp-server-git", "--repository", "."],
+      "description": "仓库状态、diff 与历史查询"
+    }
+  },
+  "policy": {
+    "write_requires_approval": true,
+    "network_requires_approval": true,
+    "secrets_read": "deny"
+  }
+}
