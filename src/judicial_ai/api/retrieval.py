@@ -1,8 +1,11 @@
 ﻿from __future__ import annotations
 
+from datetime import timedelta
 from typing import Any
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, File, Form, Query, Request, UploadFile
+from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
 from ..acl import (
@@ -21,15 +24,22 @@ from ..models import (
     ChunkMeta,
     Document,
     DocumentVersion,
+    GraphEntity,
+    GraphRelation,
+    IndexChunkSnapshot,
     IndexVersion,
+    KbAlias,
     KbVersion,
     KbVersionChunk,
     KnowledgeBase,
     ResourceGrant,
+    utcnow,
 )
 from ..schemas import (
     DocumentAccessPolicy,
     DocumentCreate,
+    IndexApprovalRequest,
+    IndexRejectionRequest,
     KbAliasCreate,
     KbCreate,
     KbGrantCreate,
@@ -37,12 +47,20 @@ from ..schemas import (
     RetrievalConfigCreate,
     RetrieveRequest,
 )
-from ..security import Principal, require_any, require_app, require_permission
+from ..security import Principal, require_admin, require_any, require_app, require_permission
 from ..services.jobs import enqueue_job, job_to_dict
+from ..services.object_store import (
+    ObjectStoreError,
+    get_object_store,
+    iter_object,
+    sha256_bytes,
+)
 from ..services.observability import audit, record_event
 from ..services.retrieval import (
     add_document,
     add_document_from_file,
+    approve_index,
+    cleanup_index_artifacts,
     create_kb,
     create_kb_version,
     create_retrieval_config,
@@ -50,6 +68,9 @@ from ..services.retrieval import (
     get_kb,
     index_to_dict,
     kb_to_dict,
+    reconcile_index_artifacts,
+    recover_index,
+    reject_index,
     retrieve,
     set_alias,
 )
@@ -107,7 +128,37 @@ def _document_version_info(version: DocumentVersion | None) -> dict[str, Any] | 
         "page_count": version.page_count,
         "parse_status": version.parse_status,
         "parse_warning": version.parse_error,
+        "original_filename": version.original_filename,
+        "content_type": version.content_type,
+        "object_size": version.object_size,
+        "content_hash": version.content_hash,
+        "storage_status": version.storage_status,
+        "retention_until": (
+            version.retention_until.isoformat() if version.retention_until else None
+        ),
     }
+
+
+def _deleted_document_for(
+    db: Session, principal: Principal, document_id: int
+) -> Document:
+    query = db.query(Document).filter(Document.id == document_id)
+    if principal.kind in {"app", "user"} and not principal.is_admin:
+        query = query.filter(Document.tenant_id == (principal.tenant_id or 0))
+    document = query.first()
+    if document is None:
+        raise ApiError("RESOURCE_NOT_FOUND", "文档不存在", 404)
+    _kb_for(db, principal, document.kb_id, need="owner")
+    return document
+
+
+def _actor(principal: Principal) -> str:
+    return (
+        principal.username
+        or principal.app_code
+        or principal.user_id
+        or f"{principal.kind}:{principal.app_id or 0}"
+    )
 
 
 def _auto_index(
@@ -370,10 +421,10 @@ def update_alias(
     kb_id: int,
     payload: KbAliasCreate,
     request: Request,
-    principal: Principal = Depends(require_permission("kb:write")),
+    principal: Principal = Depends(require_permission("kb:promote")),
     db: Session = Depends(get_db),
 ):
-    kb = _kb_for(db, principal, kb_id, need="write")
+    kb = _kb_for(db, principal, kb_id, need="owner")
     alias = set_alias(
         db,
         kb,
@@ -390,6 +441,107 @@ def update_alias(
             "index_version_id": alias.index_version_id,
             "retrieval_config_id": alias.retrieval_config_id,
         },
+    )
+
+
+@router.post("/api/v1/kbs/{kb_id}/indexes/{index_version_id}/approve")
+def approve_index_version(
+    kb_id: int,
+    index_version_id: int,
+    payload: IndexApprovalRequest,
+    request: Request,
+    principal: Principal = Depends(require_permission("kb:approve")),
+    db: Session = Depends(get_db),
+):
+    kb = _kb_for(db, principal, kb_id, need="owner")
+    index = approve_index(db, kb, index_version_id, _actor(principal))
+    audit(
+        db,
+        principal,
+        "index.approve",
+        "index_version",
+        index.id,
+        after={"status": index.status, "reason": payload.reason},
+        tenant_id=kb.tenant_id,
+    )
+    return ok(request, index_to_dict(index))
+
+
+@router.post("/api/v1/kbs/{kb_id}/indexes/{index_version_id}/reject")
+def reject_index_version(
+    kb_id: int,
+    index_version_id: int,
+    payload: IndexRejectionRequest,
+    request: Request,
+    principal: Principal = Depends(require_permission("kb:approve")),
+    db: Session = Depends(get_db),
+):
+    kb = _kb_for(db, principal, kb_id, need="owner")
+    index = reject_index(db, kb, index_version_id, _actor(principal), payload.reason)
+    audit(
+        db,
+        principal,
+        "index.reject",
+        "index_version",
+        index.id,
+        after={"status": index.status, "reason": payload.reason},
+        tenant_id=kb.tenant_id,
+    )
+    return ok(request, index_to_dict(index))
+
+
+@router.post("/api/v1/admin/indexes/reconcile")
+def reconcile_indexes(
+    request: Request,
+    repair: bool = Query(default=False),
+    kb_id: int | None = Query(default=None),
+    principal: Principal = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    result = reconcile_index_artifacts(db, kb_id=kb_id, repair=repair)
+    audit(
+        db,
+        principal,
+        "index.reconcile",
+        "index_version",
+        kb_id,
+        after={
+            "repair": repair,
+            "issues": len(result["issues"]),
+            "orphan_vector": len(result["orphan_vector_index_ids"]),
+            "orphan_graph": len(result["orphan_graph_index_ids"]),
+            "backend_errors": result["backend_errors"],
+        },
+    )
+    return ok(request, result)
+
+
+@router.post("/api/v1/kbs/{kb_id}/indexes/{index_version_id}/recover")
+def recover_index_version(
+    kb_id: int,
+    index_version_id: int,
+    request: Request,
+    principal: Principal = Depends(require_permission("kb:write")),
+    db: Session = Depends(get_db),
+):
+    kb = _kb_for(db, principal, kb_id, need="owner")
+    previous, replacement = recover_index(db, kb, index_version_id)
+    audit(
+        db,
+        principal,
+        "index.recover",
+        "index_version",
+        previous.id,
+        after={"replacement_index_version_id": replacement.id},
+        tenant_id=kb.tenant_id,
+    )
+    return ok(
+        request,
+        {
+            "previous": index_to_dict(previous),
+            "replacement": index_to_dict(replacement),
+        },
+        201,
     )
 
 
@@ -500,6 +652,277 @@ def get_document(
             ],
         },
     )
+
+
+@router.get("/api/v1/documents/{document_id}/download")
+def download_document(
+    document_id: int,
+    request: Request,
+    version: int | None = Query(default=None, ge=1),
+    principal: Principal = Depends(require_any),
+    db: Session = Depends(get_db),
+):
+    document = _document_for(db, principal, document_id)
+    query = db.query(DocumentVersion).filter(
+        DocumentVersion.document_id == document.id,
+        DocumentVersion.deleted_at.is_(None),
+    )
+    record = (
+        query.filter(DocumentVersion.id == version).first()
+        if version is not None
+        else query.order_by(DocumentVersion.version_no.desc()).first()
+    )
+    if record is None:
+        raise ApiError("RESOURCE_NOT_FOUND", "文档版本不存在", 404)
+    if record.storage_status != "AVAILABLE" or not record.object_key:
+        raise ApiError("OBJECT_UNAVAILABLE", "文档原件不可用", 409)
+    try:
+        content = get_object_store().get(record.object_key)
+    except ObjectStoreError as exc:
+        raise ApiError("DEPENDENCY_UNAVAILABLE", "文档原件读取失败", 503) from exc
+    digest = sha256_bytes(content)
+    if digest != record.content_hash:
+        raise ApiError(
+            "OBJECT_INTEGRITY_FAILED",
+            "文档原件完整性校验失败",
+            503,
+            {"expected": record.content_hash, "actual": digest},
+        )
+    filename = record.original_filename or f"document-{document.id}.bin"
+    headers = {
+        "Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}",
+        "ETag": f'"sha256:{record.content_hash}"',
+        "X-Content-SHA256": record.content_hash,
+        "X-Request-Id": getattr(request.state, "request_id", ""),
+    }
+    return StreamingResponse(
+        iter_object(content),
+        media_type=record.content_type or "application/octet-stream",
+        headers=headers,
+    )
+
+
+@router.delete("/api/v1/documents/{document_id}")
+def delete_document(
+    document_id: int,
+    request: Request,
+    purge: bool = Query(default=False),
+    force: bool = Query(default=False),
+    principal: Principal = Depends(require_permission("kb:write")),
+    db: Session = Depends(get_db),
+):
+    document = _deleted_document_for(db, principal, document_id)
+    versions = db.query(DocumentVersion).filter(
+        DocumentVersion.document_id == document.id
+    ).all()
+    now = utcnow()
+    if not purge:
+        if document.deleted_at is not None:
+            return ok(
+                request,
+                {"document_id": document.id, "status": document.status, "deleted": True},
+            )
+        document.status = "DELETED"
+        document.deleted_at = now
+        retention_until = now + timedelta(days=get_settings().document_retention_days)
+        for version_record in versions:
+            version_record.retention_until = retention_until
+        db.query(ResourceGrant).filter(
+            ResourceGrant.resource_type == "document",
+            ResourceGrant.resource_id == document.id,
+            ResourceGrant.status == "ACTIVE",
+        ).update({"status": "REVOKED"}, synchronize_session=False)
+        db.commit()
+        audit(
+            db,
+            principal,
+            "document.delete",
+            "document",
+            document.id,
+            after={"status": document.status, "retention_until": retention_until.isoformat()},
+            tenant_id=document.tenant_id,
+        )
+        return ok(
+            request,
+            {
+                "document_id": document.id,
+                "status": document.status,
+                "retention_until": retention_until.isoformat(),
+            },
+        )
+
+    if document.deleted_at is None:
+        raise ApiError("RESOURCE_CONFLICT", "彻底清理前必须先软删除文档", 409)
+    if force and not principal.is_admin:
+        raise ApiError("FORBIDDEN", "只有管理员可以强制跳过保留期", 403)
+    pending = [
+        item.retention_until
+        for item in versions
+        if item.retention_until and item.retention_until > now
+    ]
+    if pending and not force:
+        raise ApiError(
+            "RETENTION_ACTIVE",
+            "文档仍在保留期内",
+            409,
+            {"retention_until": max(pending).isoformat()},
+        )
+
+    store = get_object_store()
+    for version_record in versions:
+        if version_record.storage_status != "PURGED":
+            version_record.storage_status = "PURGE_PENDING"
+    db.commit()
+    for version_record in versions:
+        if version_record.object_key and version_record.storage_status != "PURGED":
+            try:
+                store.delete(version_record.object_key)
+            except Exception as exc:  # noqa: BLE001
+                version_record.storage_status = "PURGE_FAILED"
+                db.commit()
+                raise ApiError("DEPENDENCY_UNAVAILABLE", "原件清理失败", 503) from exc
+
+    chunks = db.query(ChunkMeta).filter(ChunkMeta.document_id == document.id).all()
+    chunk_ids = [item.chunk_id for item in chunks]
+    affected_index_ids = {
+        int(item.index_version_id)
+        for item in chunks
+        if item.index_version_id is not None
+    }
+    if chunk_ids:
+        affected_index_ids.update(
+            int(row[0])
+            for row in db.query(IndexChunkSnapshot.index_version_id)
+            .filter(IndexChunkSnapshot.chunk_id.in_(chunk_ids))
+            .distinct()
+            .all()
+        )
+    for index_id in affected_index_ids:
+        cleanup = cleanup_index_artifacts(index_id)
+        index = db.get(IndexVersion, index_id)
+        if index is not None:
+            index.status = "STALE"
+            index.cleanup_status = cleanup["status"]
+            index.stats = {**(index.stats or {}), "cleanup": cleanup}
+        db.query(KbAlias).filter(KbAlias.index_version_id == index_id).update(
+            {"index_version_id": None}, synchronize_session=False
+        )
+        db.query(IndexChunkSnapshot).filter(
+            IndexChunkSnapshot.index_version_id == index_id
+        ).delete(synchronize_session=False)
+
+    kb_version_ids = [
+        int(row[0])
+        for row in db.query(KbVersion.id).filter(
+            KbVersion.kb_id == document.kb_id
+        ).all()
+    ]
+    snapshot_rows = (
+        db.query(KbVersionChunk)
+        .filter(KbVersionChunk.kb_version_id.in_(kb_version_ids))
+        .all()
+        if kb_version_ids
+        else []
+    )
+    touched_versions: set[int] = set()
+    for snapshot in snapshot_rows:
+        if int((snapshot.payload or {}).get("document_id") or 0) == document.id:
+            touched_versions.add(int(snapshot.kb_version_id))
+            db.delete(snapshot)
+    db.flush()
+    for kb_version_id in touched_versions:
+        remaining = db.query(KbVersionChunk).filter(
+            KbVersionChunk.kb_version_id == kb_version_id
+        ).all()
+        kb_version = db.get(KbVersion, kb_version_id)
+        if kb_version is not None:
+            kb_version.chunk_count = len(remaining)
+            kb_version.document_count = len(
+                {
+                    int((item.payload or {}).get("document_id") or 0)
+                    for item in remaining
+                }
+                - {0}
+            )
+
+    entity_ids = [
+        int(row[0])
+        for row in db.query(GraphEntity.id).filter(
+            GraphEntity.document_id == document.id
+        ).all()
+    ]
+    if entity_ids:
+        db.query(GraphRelation).filter(
+            (GraphRelation.source_id.in_(entity_ids))
+            | (GraphRelation.target_id.in_(entity_ids))
+        ).delete(synchronize_session=False)
+    db.query(GraphEntity).filter(GraphEntity.document_id == document.id).delete(
+        synchronize_session=False
+    )
+    db.query(ChunkMeta).filter(ChunkMeta.document_id == document.id).delete(
+        synchronize_session=False
+    )
+    for version_record in versions:
+        version_record.object_key = ""
+        version_record.storage_status = "PURGED"
+        version_record.deleted_at = now
+    document.status = "PURGED"
+    db.commit()
+    audit(
+        db,
+        principal,
+        "document.purge",
+        "document",
+        document.id,
+        after={"status": "PURGED", "affected_index_ids": sorted(affected_index_ids)},
+        tenant_id=document.tenant_id,
+    )
+    return ok(
+        request,
+        {
+            "document_id": document.id,
+            "status": document.status,
+            "affected_index_ids": sorted(affected_index_ids),
+        },
+    )
+
+
+@router.post("/api/v1/documents/{document_id}/restore")
+def restore_document(
+    document_id: int,
+    request: Request,
+    principal: Principal = Depends(require_permission("kb:write")),
+    db: Session = Depends(get_db),
+):
+    document = _deleted_document_for(db, principal, document_id)
+    if document.status != "DELETED":
+        raise ApiError("RESOURCE_CONFLICT", "只有保留期内的软删除文档可以恢复", 409)
+    versions = db.query(DocumentVersion).filter(
+        DocumentVersion.document_id == document.id
+    ).all()
+    store = get_object_store()
+    if any(
+        item.storage_status != "AVAILABLE"
+        or not item.object_key
+        or not store.exists(item.object_key)
+        for item in versions
+    ):
+        raise ApiError("OBJECT_UNAVAILABLE", "原件不完整，无法恢复", 409)
+    document.status = "ACTIVE"
+    document.deleted_at = None
+    for version_record in versions:
+        version_record.retention_until = None
+    db.commit()
+    audit(
+        db,
+        principal,
+        "document.restore",
+        "document",
+        document.id,
+        after={"status": "ACTIVE"},
+        tenant_id=document.tenant_id,
+    )
+    return ok(request, {"document_id": document.id, "status": document.status})
 
 
 @router.post("/v1/retrieve")

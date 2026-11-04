@@ -103,9 +103,17 @@ def readyz(response: Response):
         and components["redis"]["status"] != "ok"
     ):
         critical_failures.append("redis")
-    if settings.vector_backend != "sql" and components["vector"]["status"] == "error":
+    if (
+        settings.vector_backend != "sql"
+        and not settings.vector_fallback_sql
+        and components["vector"]["status"] == "error"
+    ):
         critical_failures.append("vector")
-    if settings.graph_enabled and components["graph"]["status"] == "error":
+    if (
+        settings.graph_enabled
+        and not settings.graph_fail_open
+        and components["graph"]["status"] == "error"
+    ):
         critical_failures.append("graph")
     if settings.inference_mode == "proxy" and components["inference"]["status"] == "error":
         critical_failures.append("inference")

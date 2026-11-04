@@ -50,6 +50,7 @@ class App(Base):
     owner = Column(String(64), nullable=False, default="")
     status = Column(String(16), nullable=False, default="ACTIVE")
     description = Column(String(512))
+    permissions = Column(JSON, nullable=False, default=lambda: ["app:invoke"])
     extra = Column("metadata", JSON, default=dict)
     created_at = Column(DateTime, nullable=False, default=utcnow)
     updated_at = Column(DateTime, nullable=False, default=utcnow, onupdate=utcnow)
@@ -434,6 +435,14 @@ class DocumentVersion(Base):
     version_no = Column(Integer, nullable=False, default=1)
     object_key = Column(String(512), nullable=False, default="")
     content_hash = Column(String(128), nullable=False)
+    original_filename = Column(String(512))
+    content_type = Column(String(255))
+    object_size = Column(BigInteger)
+    storage_status = Column(
+        String(24), nullable=False, default="AVAILABLE", server_default="LEGACY_MISSING"
+    )
+    retention_until = Column(DateTime)
+    deleted_at = Column(DateTime)
     page_count = Column(Integer)
     parse_status = Column(String(16), nullable=False, default="PARSED")
     parse_error = Column(String(1024))
@@ -478,6 +487,10 @@ class IndexVersion(Base):
     embedding_model = Column(String(128), nullable=False)
     status = Column(String(16), nullable=False, default="BUILDING")
     stats = Column(JSON)
+    approved_by = Column(String(256))
+    approved_at = Column(DateTime)
+    rejection_reason = Column(String(1024))
+    cleanup_status = Column(String(24), nullable=False, default="NOT_REQUIRED")
     created_at = Column(DateTime, nullable=False, default=utcnow)
     published_at = Column(DateTime)
 

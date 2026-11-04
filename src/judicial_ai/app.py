@@ -25,8 +25,8 @@ async def lifespan(app: FastAPI):
     settings = get_settings()
     setup_logging(settings.log_level)
     if settings.is_production:
-        if settings.allow_static_admin and settings.admin_token == "dev-admin-token":
-            raise RuntimeError("生产环境必须配置安全的 ADMIN_TOKEN，或关闭静态管理员令牌")
+        if settings.allow_static_admin:
+            raise RuntimeError("生产环境必须关闭静态管理员令牌 ALLOW_STATIC_ADMIN")
         if settings.cors_origin_list == ["*"]:
             raise RuntimeError("生产环境必须显式配置 CORS_ORIGINS，禁止使用通配符")
         if settings.is_sqlite:
@@ -35,6 +35,10 @@ async def lifespan(app: FastAPI):
             raise RuntimeError("生产环境必须启用 RESOURCE_ACL_ENFORCED")
         if settings.inference_mode != "proxy":
             raise RuntimeError("生产环境禁止使用 mock 推理")
+        if not settings.index_require_approval:
+            raise RuntimeError("生产环境必须启用 INDEX_REQUIRE_APPROVAL")
+        if not settings.require_prod_alias:
+            raise RuntimeError("生产环境必须启用 REQUIRE_PROD_ALIAS")
     init_db()
     yield
 

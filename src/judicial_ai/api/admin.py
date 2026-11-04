@@ -22,6 +22,7 @@ from ..models import (
 )
 from ..schemas import (
     AppCreate,
+    AppPermissionUpdate,
     CapabilityCreate,
     CapabilityVersionCreate,
     GrantCreate,
@@ -78,6 +79,7 @@ def _app_dict(app: App) -> dict[str, Any]:
         "type": app.type,
         "status": app.status,
         "description": app.description,
+        "permissions": app.permissions or [],
         "metadata": app.extra or {},
         "created_at": app.created_at.isoformat() if app.created_at else None,
     }
@@ -177,6 +179,7 @@ def create_app(
         name=payload.name,
         type=payload.type,
         description=payload.description,
+        permissions=sorted(set(payload.permissions)),
         extra=payload.metadata,
     )
     db.add(app)
@@ -198,6 +201,36 @@ def list_apps(
         query = query.filter(App.tenant_id == tenant_id)
     apps = query.order_by(App.created_at).all()
     return _response(request, {"items": [_app_dict(app) for app in apps], "total": len(apps)})
+
+
+@admin_router.put("/apps/{app_id}/permissions")
+def update_app_permissions(
+    app_id: int,
+    payload: AppPermissionUpdate,
+    request: Request,
+    principal: Principal = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    app = db.get(App, app_id)
+    if app is None or app.deleted_at is not None:
+        raise ApiError("RESOURCE_NOT_FOUND", "应用不存在", 404)
+    permissions = sorted(set(payload.permissions))
+    if "*" in permissions:
+        raise ApiError("INVALID_ARGUMENT", "应用权限不允许使用通配符", 400)
+    before = list(app.permissions or [])
+    app.permissions = permissions
+    db.commit()
+    db.refresh(app)
+    audit(
+        db,
+        principal,
+        "app.permissions.update",
+        "app",
+        app.id,
+        before={"permissions": before},
+        after={"permissions": permissions},
+    )
+    return _response(request, _app_dict(app))
 
 
 @admin_router.post("/apps/{app_id}/credentials")

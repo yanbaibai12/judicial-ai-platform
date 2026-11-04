@@ -56,6 +56,9 @@ class GraphStore:
     def delete_index(self, index_version_id: int) -> None:
         return None
 
+    def list_index_ids(self) -> set[int]:
+        return set()
+
     def health(self) -> dict[str, Any]:
         return {"status": "ok", "backend": self.backend}
 
@@ -210,6 +213,16 @@ class SqlGraphStore(GraphStore):
         except Exception:
             db.rollback()
             raise
+        finally:
+            db.close()
+
+    def list_index_ids(self) -> set[int]:
+        db: Session = SessionLocal()
+        try:
+            return {
+                int(row[0])
+                for row in db.query(GraphEntity.index_version_id).distinct().all()
+            }
         finally:
             db.close()
 
@@ -373,6 +386,17 @@ class Neo4jGraphStore(GraphStore):
                 "MATCH (e:Entity {index_version_id: $index_version_id}) DETACH DELETE e",
                 index_version_id=index_version_id,
             ).consume()
+
+    def list_index_ids(self) -> set[int]:
+        with self._driver.session(database=self._settings.neo4j_database) as session:
+            result = session.run(
+                "MATCH (e:Entity) RETURN DISTINCT e.index_version_id AS index_version_id"
+            )
+            return {
+                int(record["index_version_id"])
+                for record in result
+                if record["index_version_id"] is not None
+            }
 
     def health(self) -> dict[str, Any]:
         try:

@@ -238,10 +238,36 @@ def seed_demo() -> dict[str, Any]:
                 name="演示应用",
                 type="SYSTEM",
                 owner="ai-platform",
+                permissions=[
+                    "app:invoke",
+                    "kb:read",
+                    "kb:write",
+                    "kb:approve",
+                    "kb:promote",
+                    "governance:read",
+                    "governance:write",
+                    "job:read",
+                    "job:write",
+                    "mcp:write",
+                ],
             )
             db.add(app)
             db.commit()
             db.refresh(app)
+        elif not app.permissions or app.permissions == ["app:invoke"]:
+            app.permissions = [
+                "app:invoke",
+                "kb:read",
+                "kb:write",
+                "kb:approve",
+                "kb:promote",
+                "governance:read",
+                "governance:write",
+                "job:read",
+                "job:write",
+                "mcp:write",
+            ]
+            db.commit()
 
         plaintext, digest, prefix = generate_api_key()
         credential = AppCredential(

@@ -74,6 +74,8 @@ spec:
           volumeMounts:
             - name: tmp
               mountPath: /tmp
+            - name: original-documents
+              mountPath: /data/objects
           startupProbe:
             httpGet:
               path: /healthz
@@ -103,6 +105,9 @@ spec:
       volumes:
         - name: tmp
           emptyDir: {}
+        - name: original-documents
+          persistentVolumeClaim:
+            claimName: judicial-ai-original-documents
 ---
 apiVersion: v1
 kind: Service

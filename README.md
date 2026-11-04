@@ -2,7 +2,7 @@
 
 > 文档版本：v1.0  
 > 编写日期：2026-10-19  
-> 文档状态：开发设计稿（待评审）  
+> 文档状态：可运行试点版（生产验收进行中）
 > 建设依据：项目四「司法 AI 中台」介绍
 
 ## 1. 平台定位
@@ -96,9 +96,9 @@ uv run uvicorn judicial_ai.main:app --reload --port 8080
 - K8s/Kustomize：[deploy/k8s/base](deploy/k8s/base)
 - 生产就绪矩阵：[docs/12-生产就绪矩阵.md](docs/12-生产就绪矩阵.md)
 
-已实现：能力注册/发布/授权、统一网关、OpenAI 兼容 Chat/Embeddings/Rerank/SSE、知识库与混合检索、引用溯源、MCP 工具注册与调用、反馈/Bad Case/数据集、用量与审计、AI 数据治理闭环、Milvus/Neo4j/Redis 适配器、异步 Worker、OIDC/LDAP、权限与安全头、Prometheus 指标、Alembic、K8s/备份/CI、Python/Java SDK、Forge SDD Skills。
+已实现：能力注册/发布/授权、统一网关、OpenAI 兼容 Chat/Embeddings/Rerank/SSE、知识库与混合检索、引用溯源、原件归档/哈希/授权下载/保留期删除恢复、应用权限 scope、索引审批与显式生产别名、跨存储补偿和对账恢复、MCP 工具注册与调用、反馈/Bad Case/数据集、用量与审计、AI 数据治理闭环、Milvus/Neo4j/Redis 适配器、异步 Worker、OIDC/LDAP、权限与安全头、Prometheus 指标、Alembic、K8s/备份/CI、Python/Java SDK、Forge SDD Skills。
 
-仍需外部环境验收：真实 Milvus/Neo4j/Redis/vLLM 联调、IdP/LDAP 联调、MySQL 迁移回滚、K8s 集群部署、压测、安全扫描与恢复演练。JEV 仍仅 shadow；ReFRAG 为应用层压缩，不包含论文的 CPT/RL/decoder 改造。
+仍需外部环境验收：真实 Milvus/Neo4j/Redis/vLLM 联调、IdP/LDAP 联调、MySQL 迁移回滚、K8s 集群部署、生产等价压测和恢复演练；法律规则、业务金标准数据集与 UAT 必须由授权人员审核签字。JEV 仍仅 shadow；ReFRAG 为应用层压缩，不包含论文的 CPT/RL/decoder 改造。
 
 ## 8. 文档约定
 

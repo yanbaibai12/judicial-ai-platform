@@ -52,6 +52,9 @@ class VectorStore:
     def delete_index(self, index_version_id: int) -> None:
         return None
 
+    def list_index_ids(self) -> set[int]:
+        return set()
+
     def collection_name(self, index_version_id: int) -> str:
         return ""
 
@@ -305,6 +308,19 @@ class MilvusVectorStore(VectorStore):
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning("milvus_delete_failed", extra={"error": str(exc)[:240]})
+            raise
+
+    def list_index_ids(self) -> set[int]:
+        prefix = f"{self._settings.milvus_collection_prefix}_"
+        result: set[int] = set()
+        for name in self._client.list_collections():
+            if not name.startswith(prefix):
+                continue
+            try:
+                result.add(int(name[len(prefix) :]))
+            except ValueError:
+                continue
+        return result
 
     def health(self) -> dict[str, Any]:
         try:

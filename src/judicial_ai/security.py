@@ -34,6 +34,8 @@ OPERATOR_PERMISSIONS = READER_PERMISSIONS | frozenset(
     {
         "capability:write",
         "kb:write",
+        "kb:approve",
+        "kb:promote",
         "governance:write",
         "job:write",
         "mcp:write",
@@ -63,7 +65,7 @@ class Principal:
         return self.kind == "admin" or "platform-admin" in self.roles
 
     def has_permission(self, permission: str) -> bool:
-        if self.kind in {"admin", "app"}:
+        if self.kind == "admin":
             return True
         return "*" in self.permissions or permission in self.permissions
 
@@ -336,7 +338,7 @@ def _app_principal(db: Session, token: str) -> Principal | None:
         app_id=app.id,
         app_code=app.code,
         credential_id=credential.id,
-        permissions=frozenset({"app:invoke"}),
+        permissions=frozenset(app.permissions or ["app:invoke"]),
         auth_method="api_key",
     )
 
@@ -392,6 +394,8 @@ def require_admin(principal: Principal = Depends(get_principal)) -> Principal:
 def require_app(principal: Principal = Depends(get_principal)) -> Principal:
     if principal.kind != "app":
         raise ApiError("FORBIDDEN", "需要应用身份", 403)
+    if not principal.has_permission("app:invoke"):
+        raise ApiError("FORBIDDEN", "应用缺少 app:invoke 权限", 403)
     return principal
 
 

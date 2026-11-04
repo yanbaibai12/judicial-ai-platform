@@ -35,7 +35,12 @@ class AppCreate(APIModel):
     name: str = Field(min_length=1, max_length=128)
     type: Literal["SYSTEM", "AGENT", "APP", "JOB"] = "SYSTEM"
     description: str | None = None
+    permissions: list[str] = Field(default_factory=lambda: ["app:invoke"])
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class AppPermissionUpdate(APIModel):
+    permissions: list[str] = Field(min_length=1)
 
 
 class CapabilityVersionCreate(APIModel):
@@ -168,7 +173,7 @@ class DocumentCreate(APIModel):
 
 class KbVersionCreate(APIModel):
     version: str = Field(min_length=1, max_length=64)
-    publish: bool = True
+    publish: bool = False
 
 
 class KbAliasCreate(APIModel):
@@ -176,6 +181,14 @@ class KbAliasCreate(APIModel):
     kb_version: str
     index_version: str | None = None
     retrieval_config_id: int | None = None
+
+
+class IndexApprovalRequest(APIModel):
+    reason: str | None = Field(default=None, max_length=1024)
+
+
+class IndexRejectionRequest(APIModel):
+    reason: str = Field(min_length=1, max_length=1024)
 
 
 class KbGrantCreate(APIModel):

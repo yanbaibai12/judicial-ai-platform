@@ -29,6 +29,16 @@ class Settings(BaseSettings):
     auto_create_schema: bool = True
     node_id: int = -1
 
+    object_store_backend: Literal["filesystem", "s3"] = "filesystem"
+    object_store_path: str = "./data/objects"
+    object_store_bucket: str = "judicial-ai-originals"
+    object_store_endpoint_url: str | None = None
+    object_store_region: str | None = None
+    object_store_access_key: str | None = None
+    object_store_secret_key: str | None = None
+    object_store_sse: str = "AES256"
+    document_retention_days: int = 30
+
     inference_mode: Literal["mock", "proxy"] = "mock"
     inference_base_url: str = "http://localhost:8000/v1"
     inference_api_key: str | None = None
@@ -57,6 +67,7 @@ class Settings(BaseSettings):
 
     graph_enabled: bool = False
     graph_backend: Literal["sql", "neo4j"] = "sql"
+    graph_fail_open: bool = True
     graph_max_depth: int = 2
     neo4j_uri: str | None = None
     neo4j_user: str = "neo4j"
@@ -91,6 +102,9 @@ class Settings(BaseSettings):
     resource_acl_enforced: bool = False
     # 文档写入后自动入队 kb_index 索引任务（按文档版本幂等）
     kb_auto_index_after_upload: bool = True
+    # 生产要求索引经过审批，并且检索必须使用显式 prod alias。
+    index_require_approval: bool = False
+    require_prod_alias: bool = False
     # 示例规则未经法律专业审核，不允许在生产环境启用。
     contract_review_enabled: bool = True
 
