@@ -47,14 +47,14 @@ jobs:
       - name: Build image
         run: docker build -t judicial-ai-platform:ci .
       - name: Trivy scan
-        uses: aquasecurity/trivy-action@v0.36.0
-        with:
-          version: v0.76.1
-          image-ref: judicial-ai-platform:ci
-          format: table
-          exit-code: "0"
-          severity: HIGH,CRITICAL
-          ignore-unfixed: true
+        run: >-
+          docker run --rm
+          -v /var/run/docker.sock:/var/run/docker.sock
+          aquasec/trivy:0.76.1 image
+          --exit-code 0
+          --ignore-unfixed
+          --severity HIGH,CRITICAL
+          judicial-ai-platform:ci
       - name: Gitleaks
         uses: gitleaks/gitleaks-action@v3.0.0
         env:
