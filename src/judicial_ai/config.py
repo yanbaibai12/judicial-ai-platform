@@ -23,6 +23,8 @@ class Settings(BaseSettings):
     database_url: str = "sqlite:///./data/judicial_ai.db"
     data_dir: str = "./data"
     admin_token: str = "dev-admin-token"
+    api_key_hash_secret: str = "dev-api-key-hash-secret"
+    api_key_hash_legacy_secrets: str = ""
     db_pool_size: int = 10
     db_max_overflow: int = 20
     db_pool_timeout_seconds: int = 30
@@ -97,6 +99,10 @@ class Settings(BaseSettings):
     ldap_reader_groups: str = "cn=platform-reader,ou=groups,dc=example,dc=com"
     oidc_default_tenant_id: int | None = None
     ldap_default_tenant_id: int | None = None
+    # OIDC 令牌撤销：命中撤销列表的 jti，或被主体级撤销覆盖的令牌，立即拒绝
+    token_revocation_enabled: bool = True
+    # 撤销判定本地缓存秒数，即"撤销生效时间"的上限（0 表示每次请求查库）
+    token_revocation_cache_seconds: float = 15.0
 
     # 细粒度资源级 ACL（KB/文档级授权）；False 时仅租户隔离，保持兼容
     resource_acl_enforced: bool = False
@@ -125,6 +131,12 @@ class Settings(BaseSettings):
 
     default_top_k: int = 10
     max_top_k: int = 50
+    # 相关性下限：dense/关键词信号都低于各自阈值时丢弃候选，避免无关查询也返回 top_k。
+    # 两者均为 0 表示关闭（保持历史行为）。
+    # staging 建议 RAG_MIN_DENSE_SCORE≥0.15、RAG_MIN_KEYWORD_SCORE≥0.3，接入真实
+    # embedding 与 rerank 后必须用评测集重新标定，不能用默认值当承诺。
+    rag_min_dense_score: float = 0.0
+    rag_min_keyword_score: float = 0.0
 
     decision_provider: Literal["rule", "jev"] = "rule"
     decision_shadow_enabled: bool = False

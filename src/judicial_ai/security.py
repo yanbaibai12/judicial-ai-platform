@@ -3,11 +3,12 @@
 import base64
 import binascii
 import hashlib
+import hmac
 import secrets
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from functools import lru_cache
-from typing import Any
+from typing import Any, cast
 
 from fastapi import Depends, Request
 from sqlalchemy.orm import Session
@@ -70,8 +71,59 @@ class Principal:
         return "*" in self.permissions or permission in self.permissions
 
 
+HASH_ALGO_HMAC = "hmac-sha256"
+HASH_ALGO_LEGACY_SHA256 = "sha256"
+
+
+def hash_token_with_secret(token: str, secret: str) -> str:
+    """以指定 secret 计算密钥化指纹。禁止缓存结果，避免密钥轮换后命中陈旧值。"""
+    digest = hmac.new(secret.encode("utf-8"), token.encode("utf-8"), hashlib.sha256).hexdigest()
+    return f"{HASH_ALGO_HMAC}${digest}"
+
+
 def hash_token(token: str) -> str:
+    return hash_token_with_secret(token, get_settings().api_key_hash_secret)
+
+
+def sha256_token(token: str) -> str:
+    """裸 SHA-256，仅用于识别历史存量哈希，不再用于新建凭证。"""
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def split_stored_digest(value: str) -> tuple[str, str]:
+    """把存储值拆成 (hash_algo, digest)，识别带前缀与历史裸哈希两种形态。"""
+    if value.startswith(f"{HASH_ALGO_HMAC}$"):
+        return HASH_ALGO_HMAC, value.split("$", 1)[1]
+    return HASH_ALGO_LEGACY_SHA256, value
+
+
+def token_digest_candidates(token: str) -> list[tuple[str, str]]:
+    """按设计候选顺序生成可能的 digest，供逐个常量时间比较。
+
+    返回 `(hash_algo, digest_hex)` 列表，顺序：主 secret → legacy secrets →
+    历史裸 SHA-256。存储态中的算法前缀不参与比较，只做记录。命中裸哈希或
+    legacy 时，一律以主 secret 升格写回。每次调用都重新读取配置，避免密钥
+    轮换后出现缓存命中陈旧 secret 的情况。
+    """
+    settings = get_settings()
+    candidates: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for secret in (settings.api_key_hash_secret, *_legacy_hash_secrets(settings)):
+        digest = hmac.new(
+            secret.encode("utf-8"), token.encode("utf-8"), hashlib.sha256
+        ).hexdigest()
+        if digest not in seen:
+            seen.add(digest)
+            candidates.append((HASH_ALGO_HMAC, digest))
+    legacy_digest = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    if legacy_digest not in seen:
+        candidates.append((HASH_ALGO_LEGACY_SHA256, legacy_digest))
+    return candidates
+
+
+def _legacy_hash_secrets(settings: Any) -> tuple[str, ...]:
+    raw = getattr(settings, "api_key_hash_legacy_secrets", "") or ""
+    return tuple(part.strip() for part in raw.split(",") if part.strip())
 
 
 def generate_api_key() -> tuple[str, str, str]:
@@ -167,7 +219,7 @@ def _jwk_client(url: str) -> Any:
     return jwt.PyJWKClient(url, timeout=get_settings().oidc_timeout_seconds)
 
 
-def _oidc_principal(token: str) -> Principal:
+def _oidc_principal(db: Session, token: str) -> Principal:
     settings = get_settings()
     if not (settings.oidc_issuer or settings.oidc_jwks_url):
         raise ApiError("AUTH_CONFIG", "OIDC 未配置 issuer 或 jwks_url", 503)
@@ -212,6 +264,25 @@ def _oidc_principal(token: str) -> Principal:
         tenant_id = settings.oidc_default_tenant_id
 
     subject = str(claims.get("sub"))
+
+    # 令牌撤销检查：必须在验签通过之后、返回主体之前完成。
+    from .services.revocation import is_token_revoked, to_datetime
+
+    jti = claims.get("jti")
+    revoked, revoke_reason = is_token_revoked(
+        db,
+        jti=str(jti) if jti else None,
+        subject=subject,
+        issued_at=to_datetime(claims.get("iat")),
+    )
+    if revoked:
+        raise ApiError(
+            "TOKEN_REVOKED",
+            "令牌已被撤销，请重新认证",
+            401,
+            {"reason": revoke_reason} if revoke_reason else None,
+        )
+
     return Principal(
         kind="user",
         tenant_id=tenant_id,
@@ -313,13 +384,72 @@ def _ldap_principal(username: str, password: str) -> Principal:
     )
 
 
+def _match_credential_digest(token: str, credential: AppCredential) -> bool:
+    """逐候选比较；固定顺序扫描全部候选，减少按命中位置的时序差异。
+
+    不因"哪把 secret 命中"或"哪种算法命中"返回不同错误，对外一律统一语义。
+    """
+    _, stored_digest = split_stored_digest(str(credential.key_hash or ""))
+    matched = False
+    for _, candidate_digest in token_digest_candidates(token):
+        if _constant_time_equal(candidate_digest, stored_digest):
+            matched = True
+    return matched
+
+
+def _upgrade_credential_digest(db: Session, credential: AppCredential, token: str) -> None:
+    """把命中旧算法/旧 secret 的哈希升格为主 secret 的密钥化哈希。
+
+    撞到 `key_hash` 唯一约束时放弃写回（同一明文已登记过新哈希），鉴权结果
+    不受影响；该场景记 `credential.rehash_conflict` 审计供运维排查。
+    """
+    primary_stored = hash_token(token)
+    if credential.key_hash == primary_stored:
+        return
+    from .services.observability import audit  # noqa: PLC0415 - 避免模块级循环导入
+
+    before_algo = str(credential.hash_algo or "")
+    algo, _, _ = primary_stored.partition("$")
+    credential.key_hash = cast(Any, primary_stored)
+    credential.hash_algo = cast(Any, algo)
+    try:
+        db.flush()
+        db.commit()
+    except Exception:  # noqa: BLE001 - 唯一约束等冲突不应影响鉴权结果
+        db.rollback()
+        audit(
+            db,
+            Principal(kind="app", tenant_id=None, app_code="system"),
+            "credential.rehash_conflict",
+            "app_credential",
+            cast(int, credential.id),
+            before={"hash_algo": before_algo},
+            after={"error": "unique_conflict"},
+        )
+        db.commit()
+        return
+    audit(
+        db,
+        Principal(kind="app", tenant_id=None, app_code="system"),
+        "credential.rehash",
+        "app_credential",
+        cast(int, credential.id),
+        before={"hash_algo": before_algo},
+        after={"hash_algo": algo, "key_prefix": credential.key_prefix},
+    )
+    db.commit()
+
+
 def _app_principal(db: Session, token: str) -> Principal | None:
+    candidates = token_digest_candidates(token)
+    probes = [f"{algo}${digest}" for algo, digest in candidates]
+    probes.extend(digest for algo, digest in candidates if algo == HASH_ALGO_LEGACY_SHA256)
     credential = (
         db.query(AppCredential)
-        .filter(AppCredential.key_hash == hash_token(token), AppCredential.status == "ACTIVE")
+        .filter(AppCredential.key_hash.in_(probes), AppCredential.status == "ACTIVE")
         .first()
     )
-    if credential is None:
+    if credential is None or not _match_credential_digest(token, credential):
         return None
     if credential.expires_at and credential.expires_at < utcnow():
         raise ApiError("TOKEN_EXPIRED", "凭证已过期", 401)
@@ -331,6 +461,7 @@ def _app_principal(db: Session, token: str) -> Principal | None:
         raise ApiError("AUTH_INVALID", "租户不可用", 401)
 
     credential.last_used_at = utcnow()
+    _upgrade_credential_digest(db, credential, token)
     db.commit()
     return Principal(
         kind="app",
@@ -361,7 +492,7 @@ def _authenticate(request: Request, db: Session) -> Principal:
         raise ApiError("AUTH_INVALID", "凭证无效", 401)
 
     if settings.auth_mode in {"oidc", "hybrid"}:
-        return _oidc_principal(token)
+        return _oidc_principal(db, token)
 
     principal = _app_principal(db, token)
     if principal is not None:

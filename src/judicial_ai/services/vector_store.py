@@ -6,6 +6,7 @@ from functools import lru_cache
 from typing import Any
 
 from ..config import get_settings
+from ..errors import sanitize_exception_summary
 from ..models import ChunkMeta, IndexVersion, KnowledgeBase
 from ..text_utils import sparse_vector
 
@@ -331,7 +332,11 @@ class MilvusVectorStore(VectorStore):
                 "collections": len(collections),
             }
         except Exception as exc:  # noqa: BLE001
-            return {"status": "error", "backend": "milvus", "error": str(exc)[:240]}
+            return {
+                "status": "error",
+                "backend": "milvus",
+                "error": sanitize_exception_summary(exc),
+            }
 
 
 @lru_cache

@@ -9,14 +9,36 @@ _ASCII_WORD = re.compile(r"[a-zA-Z0-9_]+")
 _CHINESE_CHAR = re.compile(r"[\u4e00-\u9fff]")
 _WHITESPACE = re.compile(r"[ \t\r\f\v]+")
 
+DEFAULT_MAX_TEXT_CHARS = 200_000
+
+
+def bound_text(text: str, limit: int = DEFAULT_MAX_TEXT_CHARS) -> tuple[str, bool]:
+    """\u622a\u65ad\u8d85\u957f\u6587\u672c\u540e\u518d\u626b\u63cf\u3002
+
+    \u8fd4\u56de `(\u5904\u7406\u540e\u6587\u672c, \u662f\u5426\u622a\u65ad)`\u3002
+    \u6240\u6709\u5bf9\u5916\u6587\u672c\u5165\u53e3\u90fd\u5e94\u5148\u8fc7\u8fd9\u9053\u95e8\u9650\uff0c
+    \u907f\u514d\u5bf9\u8d85\u957f\u8f93\u5165\u53cd\u590d\u56de\u6eaf
+    \u9020\u6210\u4e0d\u53ef\u63a7\u7684 CPU \u6d88\u8017\u3002
+    """
+    if not isinstance(text, str):
+        return "", False
+    if limit <= 0:
+        return text, False
+    if len(text) <= limit:
+        return text, False
+    return text[:limit], True
+
 
 def normalize_text(text: str) -> str:
+    """\u7edf\u4e00\u7a7a\u767d\u524d\u5148\u5957\u957f\u5ea6\u95e8\u9650\uff0c\u7ed9\u4e0b\u6e38\u6b63\u5219\u626b\u63cf\u4e00\u4e2a\u786e\u5b9a\u7684\u65f6\u95f4\u4e0a\u754c\u3002"""
+    text, _ = bound_text(text)
     text = text.replace("\u3000", " ").replace("\xa0", " ")
     text = _WHITESPACE.sub(" ", text)
     return text.strip()
 
 
 def tokenize(text: str) -> list[str]:
+    text, _ = bound_text(text)
     lowered = text.lower()
     tokens = _ASCII_WORD.findall(lowered)
     chars = _CHINESE_CHAR.findall(lowered)

@@ -404,9 +404,8 @@ def test_index_reconcile_records_backend_errors(
         headers=admin_headers,
     )
     assert response.status_code == 200, response.text
-    assert response.json()["data"]["backend_errors"] == {
-        "vector": "milvus unavailable"
-    }
+    # 依赖异常文本不外泄，只保留稳定的错误类别（见 docs/15 探测面加固）。
+    assert response.json()["data"]["backend_errors"] == {"vector": "RuntimeError"}
     with SessionLocal() as db:
         record = (
             db.query(AuditLog)
@@ -414,4 +413,4 @@ def test_index_reconcile_records_backend_errors(
             .order_by(AuditLog.created_at.desc())
             .first()
         )
-        assert record.after["backend_errors"] == {"vector": "milvus unavailable"}
+        assert record.after["backend_errors"] == {"vector": "RuntimeError"}

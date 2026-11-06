@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import os
+from pathlib import Path
 from typing import Any
 
 from .config import get_settings
@@ -28,7 +30,7 @@ from .schemas import (
     McpServerCreate,
     McpToolCreate,
 )
-from .security import generate_api_key
+from .security import generate_api_key, split_stored_digest
 from .services.capabilities import create_capability, create_version, publish_version
 from .services.mcp_hub import create_server, create_tool, grant_tool
 from .services.retrieval import (
@@ -276,6 +278,7 @@ def seed_demo() -> dict[str, Any]:
             credential_type="API_KEY",
             key_hash=digest,
             key_prefix=prefix,
+            hash_algo=split_stored_digest(digest)[0],
             created_by=0,
         )
         db.add(credential)
@@ -428,6 +431,7 @@ def seed_demo() -> dict[str, Any]:
             "app_id": app.id,
             "api_key": plaintext,
             "admin_token": settings.admin_token,
+            "api_key_prefix": prefix,
             "capabilities": capability_codes,
             "kb_id": kb.id,
             "kb_version": kb_version.version,
@@ -438,8 +442,51 @@ def seed_demo() -> dict[str, Any]:
         db.close()
 
 
+def _mask_secret(value: str) -> str:
+    """保留前 4 与后 4 位的掩码展示，防止凭证明文进入终端与 CI 日志。"""
+    if not value:
+        return ""
+    if len(value) <= 8:
+        return "*" * len(value)
+    return f"{value[:4]}****{value[-4:]}"
+
+
+def _write_credential_file(path: Path, payload: dict[str, Any]) -> None:
+    """把明文凭证写入受限权限文件（POSIX 0600）。Windows 平台尽力收紧。"""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(str(path), os.O_CREAT | os.O_WRONLY | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        json.dump(payload, handle, ensure_ascii=False, indent=2)
+    try:
+        os.chmod(str(path), 0o600)
+    except OSError:  # pragma: no cover - Windows 无 POSIX 权限语义
+        pass
+
+
 def main() -> None:
+    import argparse
+
+    parser = argparse.ArgumentParser(description="初始化演示数据")
+    parser.add_argument(
+        "--show-credentials",
+        action="store_true",
+        help="把明文 API Key 写入受限文件并在 stdout 输出掩码（默认不输出任何凭证明文）",
+    )
+    parser.add_argument("--credential-file", default="./data/seed-credentials.json")
+    args = parser.parse_args()
+
     result = seed_demo()
+    secret = result.pop("api_key", "")
+    result.pop("admin_token", None)
+    result["admin_token_source"] = "ADMIN_TOKEN"
+
+    if args.show_credentials:
+        _write_credential_file(Path(args.credential_file), {"api_key": secret})
+        result["api_key"] = _mask_secret(secret)
+        result["credential_file"] = str(Path(args.credential_file))
+    else:
+        result["credential_file"] = None
+
     print(json.dumps(result, ensure_ascii=False, indent=2))
 
 

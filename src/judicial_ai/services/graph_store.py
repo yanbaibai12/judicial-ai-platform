@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 
 from ..config import get_settings
 from ..db import SessionLocal
+from ..errors import sanitize_exception_summary
 from ..ids import new_id
 from ..models import ChunkMeta, GraphEntity, GraphRelation, IndexVersion, KnowledgeBase
 from .graph_extract import entity_terms, extract_entities
@@ -406,7 +407,11 @@ class Neo4jGraphStore(GraphStore):
             self._driver.verify_connectivity()
             return {"status": "ok", "backend": "neo4j"}
         except Exception as exc:  # noqa: BLE001
-            return {"status": "error", "backend": "neo4j", "error": str(exc)[:240]}
+            return {
+                "status": "error",
+                "backend": "neo4j",
+                "error": sanitize_exception_summary(exc),
+            }
 
     def close(self) -> None:
         self._driver.close()

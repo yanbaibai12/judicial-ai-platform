@@ -11,6 +11,7 @@ from typing import Any, Protocol
 import httpx
 
 from ..config import Settings, get_settings
+from ..text_utils import bound_text
 from .governance_pipeline import sanitize_text
 
 INTENTS: tuple[str, ...] = (
@@ -173,6 +174,7 @@ class DecisionModel(Protocol):
 
 
 def _score_query(text: str) -> dict[str, float]:
+    text, _ = bound_text(text)
     scores = {intent: 0.0 for intent in INTENTS if intent != "UNKNOWN"}
     for intent, _label, pattern, weight in _RULES:
         hits = len(pattern.findall(text))
@@ -182,6 +184,7 @@ def _score_query(text: str) -> dict[str, float]:
 
 
 def _signals(text: str, intent: str) -> list[str]:
+    text, _ = bound_text(text)
     return [
         label
         for rule_intent, label, pattern, _weight in _RULES

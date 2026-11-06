@@ -5,7 +5,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import JSONResponse
-from sqlalchemy import or_
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
 from ..db import get_db
@@ -27,12 +27,14 @@ from ..schemas import (
     CapabilityVersionCreate,
     GrantCreate,
     TenantCreate,
+    TokenRevocationCreate,
 )
 from ..security import (
     Principal,
     generate_api_key,
     require_admin,
     require_any,
+    split_stored_digest,
 )
 from ..services.capabilities import (
     capability_to_dict,
@@ -45,6 +47,14 @@ from ..services.capabilities import (
     version_to_dict,
 )
 from ..services.observability import audit
+from ..services.revocation import (
+    delete_revocation,
+    list_revocations,
+    revoke,
+)
+from ..services.revocation import (
+    to_dict as revocation_to_dict,
+)
 
 admin_router = APIRouter(prefix="/api/v1/admin", tags=["admin"])
 discovery_router = APIRouter(prefix="/api/v1", tags=["capabilities"])
@@ -250,6 +260,7 @@ def create_credential(
         credential_type="API_KEY",
         key_hash=digest,
         key_prefix=prefix,
+        hash_algo=split_stored_digest(digest)[0],
         created_by=principal.app_id or 0,
     )
     db.add(credential)
@@ -307,6 +318,7 @@ def rotate_credential(
         credential_type="API_KEY",
         key_hash=digest,
         key_prefix=prefix,
+        hash_algo=split_stored_digest(digest)[0],
         created_by=principal.app_id or 0,
     )
     old.status = "REVOKED"
@@ -348,6 +360,31 @@ def revoke_credential(
         after={"app_id": credential.app_id},
     )
     return _response(request, {"id": credential.id, "status": credential.status})
+
+
+@admin_router.get("/credentials/hash-stats")
+def credential_hash_stats(
+    request: Request,
+    principal: Principal = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """按哈希算法分组的凭证计数，供运维判断升格进度。
+
+    只返回计数，不返回任何 `key_hash` 原值。
+    """
+    rows = (
+        db.query(AppCredential.hash_algo, func.count(AppCredential.id))
+        .group_by(AppCredential.hash_algo)
+        .all()
+    )
+    by_algo: dict[str, int] = {}
+    total = 0
+    for algo, count in rows:
+        label = algo or "sha256"
+        by_algo[label] = by_algo.get(label, 0) + int(count)
+        total += int(count)
+    audit(db, principal, "credential.hash_stats.read", "app_credential", 0, after={"total": total})
+    return _response(request, {"by_algo": by_algo, "total": total})
 
 
 @admin_router.post("/capabilities")
@@ -633,6 +670,59 @@ def revoke_grant(
     db.commit()
     audit(db, principal, "capability.grant.revoke", "capability_grant", grant_id)
     return _response(request, {"id": grant_id, "status": "REVOKED"})
+
+
+@admin_router.post("/token-revocations")
+def create_token_revocation(
+    payload: TokenRevocationCreate,
+    request: Request,
+    principal: Principal = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    record = revoke(
+        db,
+        jti=payload.jti,
+        subject=payload.subject,
+        reason=payload.reason,
+        revoked_before=payload.revoked_before,
+        expires_in_seconds=payload.expires_in_seconds,
+        created_by=principal.username or principal.app_code or "admin",
+    )
+    audit(
+        db,
+        principal,
+        "token.revoke",
+        "token_revocation",
+        record.id,
+        after=revocation_to_dict(record),
+    )
+    return _response(request, revocation_to_dict(record), 201)
+
+
+@admin_router.get("/token-revocations")
+def list_token_revocations(
+    request: Request,
+    limit: int = Query(default=100, ge=1, le=500),
+    principal: Principal = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    records = list_revocations(db, limit=limit)
+    return _response(
+        request,
+        {"items": [revocation_to_dict(item) for item in records], "total": len(records)},
+    )
+
+
+@admin_router.delete("/token-revocations/{revocation_id}")
+def delete_token_revocation(
+    revocation_id: int,
+    request: Request,
+    principal: Principal = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    delete_revocation(db, revocation_id)
+    audit(db, principal, "token.revocation.delete", "token_revocation", revocation_id)
+    return _response(request, {"id": revocation_id, "status": "DELETED"})
 
 
 @discovery_router.get("/capabilities")

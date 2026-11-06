@@ -7,6 +7,7 @@ from collections import OrderedDict
 from typing import Any
 
 from ..config import get_settings
+from ..text_utils import bound_text
 from .decision import RetrievalPlan
 
 _SENTENCE_RE = re.compile(r"[^。！？!?；;\n]+[。！？!?；;]?")
@@ -27,6 +28,14 @@ _PROTECTED_PATTERNS: tuple[re.Pattern[str], ...] = (
 _CACHE_MAX = 512
 _CACHE: OrderedDict[str, str] = OrderedDict()
 _CACHE_LOCK = threading.Lock()
+
+# 引用状态三态：任何非 VERIFIED 都必须显式暴露，不得静默降级为"看起来正确"。
+CITATION_VERIFIED = "VERIFIED"
+CITATION_DEGRADED = "DEGRADED"
+CITATION_INVALID = "INVALID"
+CITATION_NONE = "NONE"
+
+CITATION_STATUSES = (CITATION_VERIFIED, CITATION_DEGRADED, CITATION_INVALID)
 
 
 def _terms(text: str) -> set[str]:
@@ -115,6 +124,7 @@ def _segment_score(segment: str, query_terms: set[str]) -> float:
 
 def compress_segments(text: str, query: str, budget: int) -> str:
     """ReFRAG 式分段感知压缩：先选段，再在预算内做段内句子级精修。"""
+    text, _ = bound_text(text)
     segments = _split_segments(text)
     if len(segments) <= 1:
         return compress_text(text, query, budget)
@@ -141,6 +151,7 @@ def compress_segments(text: str, query: str, budget: int) -> str:
 
 
 def compress_text(text: str, query: str, budget: int) -> str:
+    text, _ = bound_text(text)
     if budget <= 0 or len(text) <= budget:
         return text
     if get_settings().rag_compression_segment_aware:
@@ -231,23 +242,48 @@ def _compress_with_cache(text: str, query: str, budget: int) -> str:
     return compressed
 
 
+def citation_status_for(
+    original_text: str,
+    chunk_id: str | None,
+    citation: Any,
+) -> str:
+    """判断单条引用的可信度。
+
+    - ``VERIFIED``：引用存在、指向同一个 chunk、片段可在原文逐字定位。
+    - ``DEGRADED``：chunk 一致但片段无法在原文定位（压缩/改写导致），需复核。
+    - ``INVALID``：引用指向了别的 chunk，属引错块。
+    - ``NONE``：本条结果没有引用。
+    """
+
+    if not isinstance(citation, dict):
+        return CITATION_NONE
+    if citation.get("chunk_id") != chunk_id:
+        return CITATION_INVALID
+    snippet = citation.get("snippet")
+    if isinstance(snippet, str):
+        anchor = snippet[:80].strip()
+        if anchor and anchor not in original_text:
+            return CITATION_DEGRADED
+    return CITATION_VERIFIED
+
+
 def verify_citation_integrity(
     original_results: list[dict[str, Any]],
     compressed_results: list[dict[str, Any]],
 ) -> bool:
+    """严格校验：所有引用必须 VERIFIED；离线评测与回归使用布尔接口。"""
+
     originals = {item.get("chunk_id"): item for item in original_results}
     for item in compressed_results:
-        citation = item.get("citation")
-        if not isinstance(citation, dict):
-            continue
         source = originals.get(item.get("chunk_id"))
         if source is None:
             return False
-        if citation.get("chunk_id") != item.get("chunk_id"):
-            return False
-        snippet = citation.get("snippet")
-        source_text = str(source.get("text") or "")
-        if isinstance(snippet, str) and snippet and snippet[:80] not in source_text:
+        status = citation_status_for(
+            str(source.get("text") or ""),
+            item.get("chunk_id"),
+            item.get("citation"),
+        )
+        if status in (CITATION_DEGRADED, CITATION_INVALID):
             return False
     return True
 
@@ -271,6 +307,8 @@ def compress_results(
             "verbatim_chunks": 0,
             "compressed_chunks": 0,
             "citation_integrity": True,
+            "citation_status": CITATION_NONE,
+            "citation_counts": dict.fromkeys(CITATION_STATUSES, 0),
             "budget_chars": total_budget_chars or plan.context_budget_chars,
         }
 
@@ -281,7 +319,7 @@ def compress_results(
     compressed_total = 0
     verbatim_chunks = 0
     compressed_chunks = 0
-    integrity = True
+    counts = {status: 0 for status in CITATION_STATUSES}
 
     for index, item in enumerate(results):
         original_text = str(item.get("text") or "")
@@ -291,18 +329,15 @@ def compress_results(
 
         citation = item.get("citation")
         new_citation = dict(citation) if isinstance(citation, dict) else None
-        valid_citation = True
-        if new_citation is not None:
-            if new_citation.get("chunk_id") != item.get("chunk_id"):
-                valid_citation = False
-            snippet = new_citation.get("snippet")
-            if isinstance(snippet, str) and snippet and snippet[:80] not in original_text:
-                valid_citation = False
-        if not valid_citation:
-            integrity = False
+        status = citation_status_for(original_text, item.get("chunk_id"), new_citation)
+        if status in counts:
+            counts[status] += 1
+        if status in (CITATION_DEGRADED, CITATION_INVALID):
+            # 引用不可信时回退为原文，避免把无法定位的片段当成证据。
             new_text = original_text
             if new_citation is not None:
                 new_citation["chunk_id"] = item.get("chunk_id")
+                new_citation["status"] = status
 
         original_total += len(original_text)
         compressed_total += len(new_text)
@@ -314,10 +349,21 @@ def compress_results(
         new_item = dict(item)
         new_item["text"] = new_text
         if new_citation is not None:
+            new_citation.setdefault("status", status)
             new_item["citation"] = new_citation
+        new_item["citation_status"] = status
         new_item["original_chars"] = len(original_text)
         new_item["compressed_text"] = new_text != original_text
         items.append(new_item)
+
+    if counts[CITATION_INVALID]:
+        overall = CITATION_INVALID
+    elif counts[CITATION_DEGRADED]:
+        overall = CITATION_DEGRADED
+    elif counts[CITATION_VERIFIED]:
+        overall = CITATION_VERIFIED
+    else:
+        overall = CITATION_NONE
 
     stats = {
         "enabled": True,
@@ -329,7 +375,10 @@ def compress_results(
         "ratio": round(compressed_total / original_total, 4) if original_total else 1.0,
         "verbatim_chunks": verbatim_chunks,
         "compressed_chunks": compressed_chunks,
-        "citation_integrity": integrity,
+        "citation_integrity": counts[CITATION_DEGRADED] == 0
+        and counts[CITATION_INVALID] == 0,
+        "citation_status": overall,
+        "citation_counts": counts,
         "budget_chars": budget,
     }
     return items, stats

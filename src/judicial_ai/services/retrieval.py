@@ -1,6 +1,5 @@
 ﻿from __future__ import annotations
 
-import io
 import logging
 import mimetypes
 import time
@@ -11,8 +10,9 @@ from sqlalchemy.orm import Session
 
 from ..acl import accessible_document_ids, assert_access
 from ..config import get_settings
-from ..errors import ApiError
+from ..errors import ApiError, sanitize_exception_summary
 from ..ids import new_id
+from ..metrics import record_citation_integrity, record_document_parse
 from ..models import (
     ChunkMeta,
     Document,
@@ -35,8 +35,17 @@ from ..text_utils import (
     keyword_score,
     normalize_text,
 )
-from .context_compression import compress_results
+from .context_compression import (
+    CITATION_DEGRADED,
+    CITATION_INVALID,
+    CITATION_NONE,
+    CITATION_STATUSES,
+    CITATION_VERIFIED,
+    citation_status_for,
+    compress_results,
+)
 from .decision import RetrievalPlan, plan_query
+from .document_parser import PARSED, ParsedDocument, parse_document
 from .graph_store import get_graph_store, graph_search_or_degraded
 from .inference import get_inference_client
 from .object_store import get_object_store, sha256_bytes
@@ -146,6 +155,9 @@ def add_document(
     raw_content: bytes | None = None,
     original_filename: str | None = None,
     content_type: str | None = None,
+    parse_status: str | None = None,
+    parse_warning: str | None = None,
+    parser: str | None = None,
 ) -> tuple[Document, DocumentVersion, int, bool]:
     source_content = raw_content if raw_content is not None else payload.text.encode("utf-8")
     digest = sha256_bytes(source_content)
@@ -216,11 +228,19 @@ def add_document(
         source_ref=payload.source_ref,
         content_hash=digest,
         security_level=payload.security_level,
-        extra=payload.metadata,
+        extra=(
+            {**(payload.metadata or {}), "parse_parser": parser}
+            if parser
+            else payload.metadata
+        ),
         status="ACTIVE",
     )
 
     missing_pages = [index for index, page in enumerate(pages or [], 1) if not page.strip()]
+    effective_status = parse_status or ("PARTIAL" if missing_pages else PARSED)
+    effective_warning = parse_warning
+    if effective_warning is None and missing_pages:
+        effective_warning = "部分页面未提取到文本，可能为空白页或扫描件，需人工确认"
     version = DocumentVersion(
         id=version_id,
         document_id=document.id,
@@ -232,11 +252,8 @@ def add_document(
         object_size=len(source_content),
         storage_status="AVAILABLE",
         page_count=len(pages) if pages is not None else None,
-        parse_status="PARTIAL" if missing_pages else "PARSED",
-        parse_error=(
-            "部分页面未提取到文本，可能为空白页或扫描件，需人工确认"
-            if missing_pages else None
-        ),
+        parse_status=effective_status,
+        parse_error=effective_warning,
     )
 
     chunk_config = kb.chunk_config or {}
@@ -275,6 +292,7 @@ def add_document(
                     "doc_type": payload.doc_type,
                     "security_level": payload.security_level,
                     "chunk_index": index,
+                    **({"parse_parser": parser} if parser else {}),
                     **({"pages_without_text": missing_pages} if missing_pages else {}),
                 },
                 embedding=embedding,
@@ -314,12 +332,22 @@ def add_document_from_file(
     doc_type: str = "file",
     security_level: str = "INTERNAL",
 ) -> tuple[Document, DocumentVersion, int, bool]:
-    text, _page_count, pages = _parse_file(filename, content)
-    if not text.strip():
-        raise ApiError("INVALID_ARGUMENT", "文件解析结果为空", 400)
+    parsed: ParsedDocument = parse_document(filename, content)
+    record_document_parse(parsed.parser, parsed.status)
+    if not parsed.text.strip():
+        raise ApiError(
+            "DOCUMENT_PARSE_FAILED",
+            parsed.warning or "文件解析结果为空，无法入库",
+            422,
+            {
+                "parser": parsed.parser,
+                "status": parsed.status,
+                "extension": filename.rsplit(".", 1)[-1].lower(),
+            },
+        )
     payload = DocumentCreate(
         title=title or filename,
-        text=text,
+        text=parsed.text,
         doc_type=doc_type,
         source="upload",
         source_ref=filename,
@@ -329,38 +357,26 @@ def add_document_from_file(
         db,
         kb,
         payload,
-        pages=pages,
+        pages=parsed.pages,
         raw_content=content,
         original_filename=filename,
         content_type=mimetypes.guess_type(filename)[0] or "application/octet-stream",
+        parse_status=parsed.status,
+        parse_warning=parsed.warning,
+        parser=parsed.parser,
     )
 
 
 def parse_file(filename: str, content: bytes) -> tuple[str, int | None]:
-    text, page_count, _pages = _parse_file(filename, content)
-    return text, page_count
+    parsed = parse_document(filename, content)
+    return parsed.text, parsed.page_count
 
 
 def _parse_file(filename: str, content: bytes) -> tuple[str, int | None, list[str] | None]:
-    lower = filename.lower()
-    if lower.endswith(".pdf"):
-        from pypdf import PdfReader
+    """兼容旧签名的薄封装；新代码请直接用 `parse_document` 以获取解析状态。"""
 
-        reader = PdfReader(io.BytesIO(content))
-        pages = [page.extract_text() or "" for page in reader.pages]
-        return "\n\n".join(pages), len(pages), pages
-    if lower.endswith(".docx"):
-        from docx import Document as DocxDocument
-
-        document = DocxDocument(io.BytesIO(content))
-        parts = [paragraph.text for paragraph in document.paragraphs if paragraph.text.strip()]
-        for table in document.tables:
-            for row in table.rows:
-                cells = [cell.text.strip() for cell in row.cells if cell.text.strip()]
-                if cells:
-                    parts.append(" | ".join(cells))
-        return "\n\n".join(parts), None, None
-    return content.decode("utf-8", errors="ignore"), None, None
+    parsed = parse_document(filename, content)
+    return parsed.text, parsed.page_count, parsed.pages
 
 
 def create_kb_version(
@@ -676,12 +692,12 @@ def reconcile_index_artifacts(
         try:
             vector_ids = get_vector_store().list_index_ids()
         except Exception as exc:  # noqa: BLE001
-            backend_errors["vector"] = str(exc)[:240]
+            backend_errors["vector"] = sanitize_exception_summary(exc)
     if settings.graph_enabled:
         try:
             graph_ids = get_graph_store().list_index_ids()
         except Exception as exc:  # noqa: BLE001
-            backend_errors["graph"] = str(exc)[:240]
+            backend_errors["graph"] = sanitize_exception_summary(exc)
     issues: list[dict[str, Any]] = []
 
     for index in indexes:
@@ -848,6 +864,33 @@ def resolve_versions(
     return kb_version, index
 
 
+def filter_low_relevance(
+    scored: list[dict[str, Any]], min_dense: float, min_keyword: float = 0.0
+) -> tuple[list[dict[str, Any]], int]:
+    """按原始召回信号丢弃低相关候选，返回 ``(保留项, 被过滤数量)``。
+
+    两个阈值都为 0 时原样返回（保持历史行为）。启用后保留条件为：
+    dense 达到 ``min_dense``，或关键词达到 ``min_keyword``。
+
+    注意：关键词分数只要有一个 token 重叠就 > 0，用 ``keyword > 0`` 做豁免会让阈值
+    形同虚设，因此这里必须比较具体阈值。
+    """
+
+    if min_dense <= 0 and min_keyword <= 0:
+        return scored, 0
+
+    kept: list[dict[str, Any]] = []
+    filtered = 0
+    for item in scored:
+        dense_ok = min_dense > 0 and float(item.get("dense") or 0.0) >= min_dense
+        keyword_ok = min_keyword > 0 and float(item.get("keyword") or 0.0) >= min_keyword
+        if dense_ok or keyword_ok:
+            kept.append(item)
+        else:
+            filtered += 1
+    return kept, filtered
+
+
 def _match_filters(chunk: ChunkMeta, filters: dict[str, Any]) -> bool:
     metadata = chunk.extra or {}
     for key, expected in filters.items():
@@ -926,6 +969,36 @@ def _graph_payload(
         "degraded": result.degraded or missing_graph,
         "backend": result.backend,
     }
+
+
+def _annotate_citations(
+    results: list[dict[str, Any]],
+) -> tuple[dict[str, int], str]:
+    """给每条结果标注引用可信度，并汇总整体状态（未压缩路径使用）。"""
+
+    counts: dict[str, int] = {status: 0 for status in CITATION_STATUSES}
+    for item in results:
+        status = citation_status_for(
+            str(item.get("text") or ""),
+            item.get("chunk_id"),
+            item.get("citation"),
+        )
+        item["citation_status"] = status
+        if status in counts:
+            counts[status] += 1
+        citation = item.get("citation")
+        if isinstance(citation, dict):
+            citation.setdefault("status", status)
+
+    if counts[CITATION_INVALID]:
+        overall = CITATION_INVALID
+    elif counts[CITATION_DEGRADED]:
+        overall = CITATION_DEGRADED
+    elif counts[CITATION_VERIFIED]:
+        overall = CITATION_VERIFIED
+    else:
+        overall = CITATION_NONE
+    return counts, overall
 
 
 def retrieve(
@@ -1129,6 +1202,15 @@ def retrieve(
             if keyword_rank[chunk_id] <= max(top_k * 3, 20):
                 item["recall_sources"].append("keyword")
 
+    # 相关性下限：RRF 归一化后 top1 恒为 0.6，无法用作绝对阈值，
+    # 因此用原始召回信号（dense 分数 / 关键词命中）判断"是否值得返回"。
+    # 关闭时（默认 0）保持历史行为。
+    scored, filtered_low_relevance = filter_low_relevance(
+        scored,
+        settings.rag_min_dense_score,
+        settings.rag_min_keyword_score,
+    )
+
     if not scored:
         empty_response: dict[str, Any] = {
             "query": query,
@@ -1146,10 +1228,16 @@ def retrieve(
             "usage": {
                 "total_ms": int((time.perf_counter() - started) * 1000),
                 "recall_mode": recall_mode,
+                "filtered_low_relevance": filtered_low_relevance,
             },
         }
         if plan is not None:
             empty_response["decision"] = plan.to_dict()
+        empty_response["citation"] = {
+            "status": CITATION_NONE,
+            "counts": {status: 0 for status in CITATION_STATUSES},
+            "review_required": False,
+        }
         if compress:
             empty_response["compression"] = {"enabled": False, "reason": "no_results"}
         return empty_response
@@ -1229,6 +1317,8 @@ def retrieve(
         )
 
     compression: dict[str, Any] | None = None
+    citation_counts: dict[str, int]
+    citation_overall: str
     if compress:
         if settings.rag_compression_enabled and plan is not None:
             results, compression = compress_results(
@@ -1237,8 +1327,26 @@ def retrieve(
                 plan,
                 total_budget_chars=plan.context_budget_chars,
             )
+            citation_counts = compression.get("citation_counts") or {
+                status: 0 for status in CITATION_STATUSES
+            }
+            citation_overall = compression.get("citation_status") or CITATION_NONE
         else:
             compression = {"enabled": False, "reason": "disabled"}
+            citation_counts, citation_overall = _annotate_citations(results)
+    else:
+        citation_counts, citation_overall = _annotate_citations(results)
+
+    record_citation_integrity(citation_overall)
+    if citation_overall in (CITATION_DEGRADED, CITATION_INVALID):
+        logger.warning(
+            "citation_integrity_degraded",
+            extra={
+                "status": citation_overall,
+                "counts": citation_counts,
+                "kb_ids": [kb.id for kb in kbs],
+            },
+        )
 
     total_ms = int((time.perf_counter() - started) * 1000)
     response: dict[str, Any] = {
@@ -1259,6 +1367,12 @@ def retrieve(
             "rerank_ms": rerank_ms,
             "total_ms": total_ms,
             "recall_mode": recall_mode,
+            "filtered_low_relevance": filtered_low_relevance,
+        },
+        "citation": {
+            "status": citation_overall,
+            "counts": citation_counts,
+            "review_required": citation_overall in (CITATION_DEGRADED, CITATION_INVALID),
         },
     }
     if plan is not None:

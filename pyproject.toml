@@ -58,6 +58,8 @@ ignore = ["B008"]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/conftest.py" = ["E402"]
+"tests/test_api_key_hardening.py" = ["E402"]
+"tests/test_output_redaction.py" = ["E402"]
 
 [tool.mypy]
 python_version = "3.11"
@@ -77,6 +79,7 @@ module = [
     "judicial_ai.services.jobs",
     "judicial_ai.services.vector_store",
     "judicial_ai.services.graph_store",
+    "judicial_ai.services.revocation",
     "judicial_ai.api.retrieval",
     "judicial_ai.api.governance",
     "judicial_ai.api.jobs",
