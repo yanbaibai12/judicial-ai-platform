@@ -3,22 +3,33 @@ from __future__ import annotations
 import hashlib
 import math
 import re
+import string
 import unicodedata
 from collections import Counter
 from typing import Any
 
-from ..text_utils import keyword_score, tokenize
+from ..text_utils import bound_text, keyword_score, tokenize
 
 PIPELINE_VERSION = "gov-pipeline-v1"
 REDACTION_RULES_VERSION = "redaction-v1"
 
 _HTML_TAG = re.compile(r"<[^>]{0,200}>")
 _CONTROL_CHAR = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
-_ZERO_WIDTH = re.compile(r"[\u200b-\u200f\u2060\ufeff]")
+_ZERO_WIDTH = re.compile(r"[​-‏⁠﻿]")
 _WHITESPACE = re.compile(r"[ \t\r\f\v]+")
-_REPLACEMENT_CHAR = re.compile(r"\ufffd")
-_CJK = re.compile(r"[\u4e00-\u9fff]")
+_REPLACEMENT_CHAR = re.compile(r"�")
+_CJK = re.compile(r"[一-鿿]")
 _LATIN = re.compile(r"[a-zA-Z0-9]")
+
+# 邮箱脱敏改为以 "@" 为锚点的受限窗口扫描。此前的写法
+#   (?<![A-Za-z0-9._%+-])[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}
+# 在超长且几乎不含 "@" 的输入上会让引擎在每个起点重新回溯整段 local 部分，
+# 最坏情形退化为 O(n^2)。下面先线性定位候选边界，再用限长正则做构成校验。
+_EMAIL_LOCAL_RE = re.compile(r"\A[A-Za-z0-9._%+-]{1,64}\Z")
+_EMAIL_DOMAIN_RE = re.compile(r"\A[A-Za-z0-9.-]{1,180}\.[A-Za-z]{2,}\Z")
+_EMAIL_LOCAL_CHARS = frozenset(string.ascii_letters + string.digits + "._%+-")
+_EMAIL_DOMAIN_CHARS = frozenset(string.ascii_letters + string.digits + ".-")
+_EMAIL_MASK = "[邮箱]"
 
 SENSITIVE_PATTERNS: tuple[tuple[str, re.Pattern[str], str], ...] = (
     (
@@ -36,29 +47,69 @@ SENSITIVE_PATTERNS: tuple[tuple[str, re.Pattern[str], str], ...] = (
     ),
     ("phone", re.compile(r"(?<!\d)1[3-9]\d{9}(?!\d)"), "[手机号]"),
     (
-        "email",
-        re.compile(r"(?<![A-Za-z0-9._%+-])[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}"),
-        "[邮箱]",
-    ),
-    (
         "case_no",
-        re.compile(r"[（(]\d{4}[）)][\u4e00-\u9fa5]{0,8}\d+[\u4e00-\u9fa5]{0,8}号"),
+        re.compile(r"[（(]\d{4}[）)][一-龥A-Za-z0-9]{1,24}号"),
         "[案号]",
     ),
 )
 
 _ROLE_NAME = re.compile(
     r"(被告人|原告|被告|申请人|被申请人|上诉人|被上诉人|证人|"
-    r"委托代理人|法定代表人|被害人)([\u4e00-\u9fa5]{2,3})"
+    r"委托代理人|法定代表人|被害人)([一-龥]{2,3})"
 )
 
 _QA_MARKERS = ("法", "条", "款", "院", "判决", "裁定", "合同", "证据", "规定", "司法")
+
+
+def mask_emails(text: str) -> tuple[str, int]:
+    """以 "@" 为锚点的邮箱脱敏，耗时与文本长度线性相关。
+
+    返回 ``(替换后文本, 命中数)``。
+    """
+    if not text or "@" not in text:
+        return text, 0
+    spans: list[tuple[int, int]] = []
+    for index, char in enumerate(text):
+        if char != "@":
+            continue
+        left = index
+        while left > 0 and index - left < 64 and text[left - 1] in _EMAIL_LOCAL_CHARS:
+            left -= 1
+        right = index + 1
+        while (
+            right < len(text)
+            and right - index < 181
+            and text[right] in _EMAIL_DOMAIN_CHARS
+        ):
+            right += 1
+        local = text[left:index]
+        domain = text[index + 1 : right]
+        if not local or not domain:
+            continue
+        if not _EMAIL_LOCAL_RE.match(local) or not _EMAIL_DOMAIN_RE.match(domain):
+            continue
+        if left > 0 and text[left - 1] in _EMAIL_LOCAL_CHARS:
+            continue
+        if spans and left <= spans[-1][1]:
+            continue
+        spans.append((left, right))
+    if not spans:
+        return text, 0
+    parts: list[str] = []
+    cursor = 0
+    for start, end in spans:
+        parts.append(text[cursor:start])
+        parts.append(_EMAIL_MASK)
+        cursor = end
+    parts.append(text[cursor:])
+    return "".join(parts), len(spans)
 
 
 def clean_text(text: str) -> str:
     """清洗文本：去 HTML/控制字符、统一全半角、压缩空白。"""
     if not isinstance(text, str):
         text = str(text)
+    text, _ = bound_text(text)
     text = unicodedata.normalize("NFKC", text)
     text = _HTML_TAG.sub(" ", text)
     text = _ZERO_WIDTH.sub("", text)
@@ -69,9 +120,18 @@ def clean_text(text: str) -> str:
 
 
 def mask_sensitive(text: str) -> tuple[str, dict[str, int]]:
-    """按规则脱敏，返回脱敏文本与命中计数。"""
+    """按规则脱敏，返回脱敏文本与命中计数。
+
+    扫描前先套长度门限，避免对异常超长输入反复回溯；截断情况在计数里
+    以 `truncated_chars` 上报，调用方可据此降级。
+    """
     counts: dict[str, int] = {}
-    masked = text
+    masked, was_truncated = bound_text(text)
+    if was_truncated:
+        counts["truncated_chars"] = len(text) - len(masked)
+    masked, email_hits = mask_emails(masked)
+    if email_hits:
+        counts["email"] = email_hits
     for name, pattern, replacement in SENSITIVE_PATTERNS:
         masked, hit = pattern.subn(replacement, masked)
         if hit:
@@ -87,6 +147,10 @@ def mask_sensitive(text: str) -> tuple[str, dict[str, int]]:
 
 
 def contains_sensitive(text: str) -> bool:
+    """敏感信息探测；扫描前套长度门限，超长输入不改变判定语义。"""
+    text, _ = bound_text(text)
+    if mask_emails(text)[1]:
+        return True
     if any(pattern.search(text) for _name, pattern, _replacement in SENSITIVE_PATTERNS):
         return True
     return _ROLE_NAME.search(text) is not None

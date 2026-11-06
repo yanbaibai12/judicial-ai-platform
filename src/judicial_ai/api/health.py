@@ -1,5 +1,6 @@
 ﻿from __future__ import annotations
 
+import logging
 import time
 from typing import Any
 
@@ -9,9 +10,21 @@ from sqlalchemy import text
 
 from ..config import get_settings
 from ..db import SessionLocal
+from ..errors import sanitize_exception_summary
 from ..metrics import render_metrics
 
 router = APIRouter(tags=["health"])
+logger = logging.getLogger("judicial_ai.health")
+
+
+def _failure(component: str, exc: Exception, **extra: Any) -> dict[str, Any]:
+    """健康探测失败响应：对外只给异常类型，完整细节进服务端日志。"""
+    logger.warning(
+        "healthz_component_failed",
+        extra={"component": component, "error_type": type(exc).__name__},
+        exc_info=exc,
+    )
+    return {"status": "error", "error": sanitize_exception_summary(exc), **extra}
 
 
 @router.get("/healthz")
@@ -21,14 +34,16 @@ def healthz() -> dict[str, str]:
 
 def _check_database() -> dict[str, Any]:
     started = time.perf_counter()
-    db = SessionLocal()
+    db = None
     try:
+        db = SessionLocal()
         db.execute(text("SELECT 1"))
         return {"status": "ok", "latency_ms": int((time.perf_counter() - started) * 1000)}
     except Exception as exc:  # noqa: BLE001 - health endpoints must report probes
-        return {"status": "error", "error": str(exc)[:240]}
+        return _failure("database", exc)
     finally:
-        db.close()
+        if db is not None:
+            db.close()
 
 
 def _check_redis() -> dict[str, Any]:
@@ -47,7 +62,7 @@ def _check_redis() -> dict[str, Any]:
         client.ping()
         return {"status": "ok", "latency_ms": int((time.perf_counter() - started) * 1000)}
     except Exception as exc:  # noqa: BLE001
-        return {"status": "error", "error": str(exc)[:240]}
+        return _failure("redis", exc)
 
 
 def _check_vector() -> dict[str, Any]:
@@ -59,7 +74,7 @@ def _check_vector() -> dict[str, Any]:
 
         return get_vector_store().health()
     except Exception as exc:  # noqa: BLE001
-        return {"status": "error", "backend": settings.vector_backend, "error": str(exc)[:240]}
+        return _failure("vector", exc, backend=settings.vector_backend)
 
 
 def _check_inference() -> dict[str, Any]:
@@ -68,7 +83,7 @@ def _check_inference() -> dict[str, Any]:
 
         return get_inference_client().health()
     except Exception as exc:  # noqa: BLE001
-        return {"status": "error", "error": str(exc)[:240]}
+        return _failure("inference", exc)
 
 
 def _check_graph() -> dict[str, Any]:
@@ -80,7 +95,7 @@ def _check_graph() -> dict[str, Any]:
 
         return get_graph_store().health()
     except Exception as exc:  # noqa: BLE001
-        return {"status": "error", "backend": settings.graph_backend, "error": str(exc)[:240]}
+        return _failure("graph", exc, backend=settings.graph_backend)
 
 
 @router.get("/readyz")
@@ -103,9 +118,17 @@ def readyz(response: Response):
         and components["redis"]["status"] != "ok"
     ):
         critical_failures.append("redis")
-    if settings.vector_backend != "sql" and components["vector"]["status"] == "error":
+    if (
+        settings.vector_backend != "sql"
+        and not settings.vector_fallback_sql
+        and components["vector"]["status"] == "error"
+    ):
         critical_failures.append("vector")
-    if settings.graph_enabled and components["graph"]["status"] == "error":
+    if (
+        settings.graph_enabled
+        and not settings.graph_fail_open
+        and components["graph"]["status"] == "error"
+    ):
         critical_failures.append("graph")
     if settings.inference_mode == "proxy" and components["inference"]["status"] == "error":
         critical_failures.append("inference")

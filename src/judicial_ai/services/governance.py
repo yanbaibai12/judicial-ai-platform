@@ -41,6 +41,7 @@ from ..schemas import (
     RetentionJobCreate,
 )
 from ..security import Principal
+from .eval_metrics import compute_content_hash
 from .governance_pipeline import (
     PIPELINE_VERSION,
     REDACTION_RULES_VERSION,
@@ -54,7 +55,7 @@ from .governance_pipeline import (
     sanitize_text,
     simhash,
 )
-from .observability import record_event
+from .observability import audit, record_event
 from .retrieval import get_kb, retrieve
 
 
@@ -233,6 +234,26 @@ def _add_lineage(
     return record
 
 
+def _assert_version_writable(db: Session, version: DatasetVersion) -> None:
+    """冻结版本不可写（AC-1.2）。
+
+    任何对 `dataset_item` 的追加/修改都必须先过这里；命中时记
+    `dataset.version.write_rejected` 并抛 409，不静默改写历史。
+    """
+    if not version.is_frozen:
+        return
+    audit(
+        db,
+        Principal(kind="app", tenant_id=None, app_code="system"),
+        "dataset.version.write_rejected",
+        "dataset_version",
+        int(version.id),
+        after={"status": version.status},
+    )
+    db.commit()
+    raise ApiError("JOB_STATE_INVALID", "已冻结的数据集版本不能写入", 409)
+
+
 def _event_candidate(event: AiEvent) -> dict[str, Any]:
     payload = event.payload or {}
     instruction, input_text = _flatten_input_text(payload)
@@ -376,13 +397,13 @@ def create_dataset_version(
         id=new_id(),
         dataset_id=dataset.id,
         version=payload.version,
-        status="PUBLISHED" if payload.publish else "DRAFT",
+        status="DRAFT",
         source_snapshot=source_snapshot,
         filter_config=filter_config,
         prelabel_model="rule-based/v1",
         stats={},
         created_by=principal.app_id or 0,
-        published_at=utcnow() if payload.publish else None,
+        published_at=None,
     )
     db.add(version)
     db.flush()
@@ -594,6 +615,28 @@ def create_dataset_version(
             )
         )
 
+    version.status = "PUBLISHED" if payload.publish else "DRAFT"
+    version.redaction_rule_version = REDACTION_RULES_VERSION
+    version.content_hash = compute_content_hash(
+        [
+            {
+                "sample_id": str(item["candidate"].get("source_event_id") or index),
+                "scenario": str(item["candidate"].get("item_type") or ""),
+                "question": (item["input"] or {}).get("query") or "",
+                "expected_answer_type": (
+                    "abstain" if (item["label"] or {}).get("abstain_required") else "answer"
+                ),
+                "abstain_required": bool((item["label"] or {}).get("abstain_required")),
+                "difficulty_score": 0,
+                "expected_citations": (item["label"] or {}).get("relevant_chunk_ids") or [],
+            }
+            for index, item in enumerate(accepted)
+        ],
+        redaction_rule_version=REDACTION_RULES_VERSION,
+    )
+    if payload.publish:
+        version.frozen_at = utcnow()
+        version.published_at = utcnow()
     version.stats = {
         "total": total,
         "source_count": len(candidates),
@@ -845,8 +888,34 @@ def publish_dataset_version(
     )
     if item_count == 0:
         raise ApiError("JOB_STATE_INVALID", "空数据集版本不能发布", 409)
+    items = (
+        db.query(DatasetItem)
+        .filter(DatasetItem.dataset_version_id == version.id)
+        .order_by(DatasetItem.created_at)
+        .all()
+    )
+    version.content_hash = compute_content_hash(
+        [
+            {
+                "sample_id": str(item.source_event_id or item.id),
+                "scenario": str((item.label or {}).get("scenario") or item.item_type or ""),
+                "question": (item.input or {}).get("query") or "",
+                "expected_answer_type": (
+                    "abstain" if (item.label or {}).get("abstain_required") else "answer"
+                ),
+                "abstain_required": bool((item.label or {}).get("abstain_required")),
+                "difficulty_score": int((item.label or {}).get("difficulty_score") or 0),
+                "expected_citations": (item.label or {}).get("relevant_chunk_ids") or [],
+            }
+            for item in items
+        ],
+        redaction_rule_version=version.redaction_rule_version or REDACTION_RULES_VERSION,
+    )
+    if not version.redaction_rule_version:
+        version.redaction_rule_version = REDACTION_RULES_VERSION
     version.status = "PUBLISHED"
     version.approved_by = principal.app_id or 0
+    version.frozen_at = version.frozen_at or utcnow()
     version.published_at = utcnow()
     _add_lineage(
         db,

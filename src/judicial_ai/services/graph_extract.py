@@ -3,7 +3,7 @@
 import re
 from dataclasses import dataclass
 
-from ..text_utils import normalize_text
+from ..text_utils import bound_text, normalize_text
 
 _LAW = re.compile(
     r"《?[\u4e00-\u9fa5]{2,32}(?:法|条例|规定|解释|纪要|办法|细则)》?"
@@ -37,6 +37,8 @@ def _add(entities: list[Entity], seen: set[str], name: str, entity_type: str) ->
 
 
 def extract_entities(text: str, limit: int = 24) -> list[Entity]:
+    """按规律抽取实体；扫描前套长度门限，避免对超长输入反复扫描。"""
+    text, _ = bound_text(text)
     entities: list[Entity] = []
     seen: set[str] = set()
     for match in _LAW.findall(text):

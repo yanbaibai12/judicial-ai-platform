@@ -1,6 +1,11 @@
 from __future__ import annotations
 
 from judicial_ai.services.context_compression import (
+    CITATION_DEGRADED,
+    CITATION_INVALID,
+    CITATION_NONE,
+    CITATION_VERIFIED,
+    citation_status_for,
     compress_results,
     compress_text,
     verify_citation_integrity,
@@ -101,6 +106,49 @@ def test_invalid_citation_falls_back_to_original_text() -> None:
     assert stats["citation_integrity"] is False
     assert compressed[0]["text"] == result["text"]
     assert verify_citation_integrity([result], compressed) is False
+
+
+def test_citation_status_separates_degraded_from_invalid() -> None:
+    verified = _result()
+    degraded_citation = {"chunk_id": "chk_1", "snippet": "原文中根本不存在的片段"}
+    invalid_citation = {"chunk_id": "chk_other", "snippet": LEGAL_TEXT[:30]}
+
+    assert citation_status_for(verified["text"], "chk_1", verified["citation"]) == CITATION_VERIFIED
+    assert (
+        citation_status_for(verified["text"], "chk_1", degraded_citation) == CITATION_DEGRADED
+    )
+    assert citation_status_for(verified["text"], "chk_1", invalid_citation) == CITATION_INVALID
+    assert citation_status_for(verified["text"], "chk_1", None) == CITATION_NONE
+
+
+def test_compress_results_reports_three_state_counts() -> None:
+    results = [
+        _result(),
+        _result("chk_2", LEGAL_TEXT, {"chunk_id": "chk_2", "snippet": "无法在原文定位的片段"}),
+    ]
+    compressed, stats = compress_results(
+        results, "借款利率", _plan(), total_budget_chars=260
+    )
+
+    assert stats["citation_counts"][CITATION_VERIFIED] == 1
+    assert stats["citation_counts"][CITATION_DEGRADED] == 1
+    assert stats["citation_status"] == CITATION_DEGRADED
+    assert stats["citation_integrity"] is False
+    assert compressed[0]["citation_status"] == CITATION_VERIFIED
+    assert compressed[1]["citation_status"] == CITATION_DEGRADED
+    # 引用不可信时必须回退原文，不能把改写后的文本当证据返回。
+    assert compressed[1]["text"] == results[1]["text"]
+
+
+def test_compress_results_marks_invalid_when_overall_has_mismatched_chunk() -> None:
+    results = [_result("chk_9", LEGAL_TEXT, {"chunk_id": "chk_other", "snippet": LEGAL_TEXT[:20]})]
+    compressed, stats = compress_results(
+        results, "借款利率", _plan(), total_budget_chars=260
+    )
+
+    assert stats["citation_status"] == CITATION_INVALID
+    assert compressed[0]["citation"]["status"] == CITATION_INVALID
+    assert compressed[0]["text"] == results[0]["text"]
 
 
 def test_compression_is_deterministic() -> None:

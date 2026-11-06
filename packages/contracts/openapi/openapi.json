@@ -464,6 +464,56 @@
         }
       }
     },
+    "/api/v1/admin/apps/{app_id}/permissions": {
+      "put": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Update App Permissions",
+        "operationId": "update_app_permissions_api_v1_admin_apps__app_id__permissions_put",
+        "parameters": [
+          {
+            "name": "app_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "App Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AppPermissionUpdate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/admin/apps/{app_id}/credentials": {
       "post": {
         "tags": [
@@ -1805,6 +1855,230 @@
         }
       }
     },
+    "/api/v1/kbs/{kb_id}/indexes/{index_version_id}/approve": {
+      "post": {
+        "tags": [
+          "retrieval"
+        ],
+        "summary": "Approve Index Version",
+        "operationId": "approve_index_version_api_v1_kbs__kb_id__indexes__index_version_id__approve_post",
+        "parameters": [
+          {
+            "name": "kb_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Kb Id"
+            }
+          },
+          {
+            "name": "index_version_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Index Version Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/IndexApprovalRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/kbs/{kb_id}/indexes/{index_version_id}/reject": {
+      "post": {
+        "tags": [
+          "retrieval"
+        ],
+        "summary": "Reject Index Version",
+        "operationId": "reject_index_version_api_v1_kbs__kb_id__indexes__index_version_id__reject_post",
+        "parameters": [
+          {
+            "name": "kb_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Kb Id"
+            }
+          },
+          {
+            "name": "index_version_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Index Version Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/IndexRejectionRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/admin/indexes/reconcile": {
+      "post": {
+        "tags": [
+          "retrieval"
+        ],
+        "summary": "Reconcile Indexes",
+        "operationId": "reconcile_indexes_api_v1_admin_indexes_reconcile_post",
+        "parameters": [
+          {
+            "name": "repair",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false,
+              "title": "Repair"
+            }
+          },
+          {
+            "name": "kb_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Kb Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/kbs/{kb_id}/indexes/{index_version_id}/recover": {
+      "post": {
+        "tags": [
+          "retrieval"
+        ],
+        "summary": "Recover Index Version",
+        "operationId": "recover_index_version_api_v1_kbs__kb_id__indexes__index_version_id__recover_post",
+        "parameters": [
+          {
+            "name": "kb_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Kb Id"
+            }
+          },
+          {
+            "name": "index_version_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Index Version Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/retrieval-configs": {
       "post": {
         "tags": [
@@ -1860,6 +2134,195 @@
               "type": "integer",
               "title": "Document Id"
             }
+          },
+          {
+            "name": "version",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Version"
+            }
+          },
+          {
+            "name": "kb_version_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Kb Version Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "retrieval"
+        ],
+        "summary": "Delete Document",
+        "operationId": "delete_document_api_v1_documents__document_id__delete",
+        "parameters": [
+          {
+            "name": "document_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Document Id"
+            }
+          },
+          {
+            "name": "purge",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false,
+              "title": "Purge"
+            }
+          },
+          {
+            "name": "force",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false,
+              "title": "Force"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/documents/{document_id}/download": {
+      "get": {
+        "tags": [
+          "retrieval"
+        ],
+        "summary": "Download Document",
+        "operationId": "download_document_api_v1_documents__document_id__download_get",
+        "parameters": [
+          {
+            "name": "document_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Document Id"
+            }
+          },
+          {
+            "name": "version",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Version"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/documents/{document_id}/restore": {
+      "post": {
+        "tags": [
+          "retrieval"
+        ],
+        "summary": "Restore Document",
+        "operationId": "restore_document_api_v1_documents__document_id__restore_post",
+        "parameters": [
+          {
+            "name": "document_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Document Id"
+            }
           }
         ],
         "responses": {
@@ -1901,6 +2364,344 @@
           },
           "required": true
         },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/documents/{document_id}/access-policy": {
+      "put": {
+        "tags": [
+          "retrieval"
+        ],
+        "summary": "Update Document Access Policy",
+        "operationId": "update_document_access_policy_api_v1_documents__document_id__access_policy_put",
+        "parameters": [
+          {
+            "name": "document_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Document Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DocumentAccessPolicy"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/documents/{document_id}/grants": {
+      "get": {
+        "tags": [
+          "retrieval"
+        ],
+        "summary": "List Document Grants",
+        "operationId": "list_document_grants_api_v1_documents__document_id__grants_get",
+        "parameters": [
+          {
+            "name": "document_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Document Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "retrieval"
+        ],
+        "summary": "Create Document Grant",
+        "operationId": "create_document_grant_api_v1_documents__document_id__grants_post",
+        "parameters": [
+          {
+            "name": "document_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Document Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/KbGrantCreate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "retrieval"
+        ],
+        "summary": "Delete Document Grant",
+        "operationId": "delete_document_grant_api_v1_documents__document_id__grants_delete",
+        "parameters": [
+          {
+            "name": "document_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Document Id"
+            }
+          },
+          {
+            "name": "subject_kind",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Subject Kind"
+            }
+          },
+          {
+            "name": "subject_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Subject Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/kbs/{kb_id}/grants": {
+      "get": {
+        "tags": [
+          "retrieval"
+        ],
+        "summary": "List Kb Grants",
+        "operationId": "list_kb_grants_api_v1_kbs__kb_id__grants_get",
+        "parameters": [
+          {
+            "name": "kb_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Kb Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "retrieval"
+        ],
+        "summary": "Create Kb Grant",
+        "operationId": "create_kb_grant_api_v1_kbs__kb_id__grants_post",
+        "parameters": [
+          {
+            "name": "kb_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Kb Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/KbGrantCreate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "retrieval"
+        ],
+        "summary": "Delete Kb Grant",
+        "operationId": "delete_kb_grant_api_v1_kbs__kb_id__grants_delete",
+        "parameters": [
+          {
+            "name": "kb_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Kb Id"
+            }
+          },
+          {
+            "name": "subject_kind",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Subject Kind"
+            }
+          },
+          {
+            "name": "subject_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Subject Id"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "Successful Response",
@@ -3525,6 +4326,103 @@
           }
         }
       }
+    },
+    "/api/v1/contract/review": {
+      "post": {
+        "tags": [
+          "contract"
+        ],
+        "summary": "Review",
+        "operationId": "review_api_v1_contract_review_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ContractReviewRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/contract/rules": {
+      "get": {
+        "tags": [
+          "contract"
+        ],
+        "summary": "Rules",
+        "operationId": "rules_api_v1_contract_rules_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/contract/report": {
+      "post": {
+        "tags": [
+          "contract"
+        ],
+        "summary": "Report",
+        "operationId": "report_api_v1_contract_report_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ContractReportRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -3708,6 +4606,13 @@
             ],
             "title": "Description"
           },
+          "permissions": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Permissions"
+          },
           "metadata": {
             "additionalProperties": true,
             "type": "object",
@@ -3722,6 +4627,24 @@
           "name"
         ],
         "title": "AppCreate"
+      },
+      "AppPermissionUpdate": {
+        "properties": {
+          "permissions": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "minItems": 1,
+            "title": "Permissions"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "permissions"
+        ],
+        "title": "AppPermissionUpdate"
       },
       "BadCaseCreate": {
         "properties": {
@@ -4425,6 +5348,78 @@
         ],
         "title": "ChatMessage"
       },
+      "ContractReportRequest": {
+        "properties": {
+          "text": {
+            "type": "string",
+            "maxLength": 200000,
+            "minLength": 10,
+            "title": "Text"
+          },
+          "kb_ids": {
+            "items": {
+              "type": "integer"
+            },
+            "type": "array",
+            "title": "Kb Ids"
+          },
+          "top_k": {
+            "type": "integer",
+            "maximum": 10.0,
+            "minimum": 1.0,
+            "title": "Top K",
+            "default": 3
+          },
+          "title": {
+            "type": "string",
+            "maxLength": 200,
+            "title": "Title",
+            "default": "未命名合同"
+          },
+          "format": {
+            "type": "string",
+            "pattern": "^(markdown|md|html)$",
+            "title": "Format",
+            "default": "markdown"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "text"
+        ],
+        "title": "ContractReportRequest"
+      },
+      "ContractReviewRequest": {
+        "properties": {
+          "text": {
+            "type": "string",
+            "maxLength": 200000,
+            "minLength": 10,
+            "title": "Text"
+          },
+          "kb_ids": {
+            "items": {
+              "type": "integer"
+            },
+            "type": "array",
+            "title": "Kb Ids"
+          },
+          "top_k": {
+            "type": "integer",
+            "maximum": 10.0,
+            "minimum": 1.0,
+            "title": "Top K",
+            "default": 3
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "text"
+        ],
+        "title": "ContractReviewRequest"
+      },
       "DatasetCreate": {
         "properties": {
           "code": {
@@ -4554,6 +5549,24 @@
           "version"
         ],
         "title": "DatasetVersionCreate"
+      },
+      "DocumentAccessPolicy": {
+        "properties": {
+          "access_policy": {
+            "type": "string",
+            "enum": [
+              "INHERIT",
+              "RESTRICTED"
+            ],
+            "title": "Access Policy"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "access_policy"
+        ],
+        "title": "DocumentAccessPolicy"
       },
       "DocumentCreate": {
         "properties": {
@@ -4839,6 +5852,41 @@
         "type": "object",
         "title": "HTTPValidationError"
       },
+      "IndexApprovalRequest": {
+        "properties": {
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 1024
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "IndexApprovalRequest"
+      },
+      "IndexRejectionRequest": {
+        "properties": {
+          "reason": {
+            "type": "string",
+            "maxLength": 1024,
+            "minLength": 1,
+            "title": "Reason"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "reason"
+        ],
+        "title": "IndexRejectionRequest"
+      },
       "InvokeRequest": {
         "properties": {
           "version": {
@@ -5006,6 +6054,54 @@
         ],
         "title": "KbCreate"
       },
+      "KbGrantCreate": {
+        "properties": {
+          "subject_kind": {
+            "type": "string",
+            "enum": [
+              "user",
+              "app",
+              "group"
+            ],
+            "title": "Subject Kind"
+          },
+          "subject_id": {
+            "type": "string",
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Subject Id"
+          },
+          "level": {
+            "type": "string",
+            "enum": [
+              "read",
+              "write",
+              "owner"
+            ],
+            "title": "Level",
+            "default": "read"
+          },
+          "expires_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expires At"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "subject_kind",
+          "subject_id"
+        ],
+        "title": "KbGrantCreate"
+      },
       "KbVersionCreate": {
         "properties": {
           "version": {
@@ -5017,7 +6113,7 @@
           "publish": {
             "type": "boolean",
             "title": "Publish",
-            "default": true
+            "default": false
           }
         },
         "additionalProperties": false,

@@ -9,7 +9,7 @@ from typing import Any
 import httpx
 
 from ..config import get_settings
-from ..errors import ApiError
+from ..errors import ApiError, sanitize_exception_summary
 from ..text_utils import deterministic_embedding, keyword_score
 
 
@@ -63,7 +63,7 @@ class InferenceClient:
                 "status": "error",
                 "backend": "proxy",
                 "base_url": self.settings.inference_base_url,
-                "error": str(exc)[:240],
+                "error": sanitize_exception_summary(exc),
             }
 
     def chat(self, model: str, messages: list[dict[str, Any]], **options: Any) -> dict[str, Any]:

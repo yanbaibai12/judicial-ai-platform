@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 CapabilityType = Literal[
     "MODEL_CHAT",
@@ -35,7 +35,12 @@ class AppCreate(APIModel):
     name: str = Field(min_length=1, max_length=128)
     type: Literal["SYSTEM", "AGENT", "APP", "JOB"] = "SYSTEM"
     description: str | None = None
+    permissions: list[str] = Field(default_factory=lambda: ["app:invoke"])
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class AppPermissionUpdate(APIModel):
+    permissions: list[str] = Field(min_length=1)
 
 
 class CapabilityVersionCreate(APIModel):
@@ -133,6 +138,24 @@ class RetrieveRequest(APIModel):
     context_budget_chars: int | None = Field(default=None, ge=200, le=64000)
 
 
+class TokenRevocationCreate(APIModel):
+    """撤销 OIDC 令牌：``jti`` 与 ``subject`` 二选一。"""
+
+    jti: str | None = Field(default=None, max_length=256)
+    subject: str | None = Field(default=None, max_length=256)
+    reason: str | None = Field(default=None, max_length=256)
+    # 主体级撤销只影响该时刻之前签发的令牌；缺省为当前时间
+    revoked_before: datetime | None = None
+    # 撤销记录的保留秒数，缺省等于令牌最大寿命窗口
+    expires_in_seconds: int | None = Field(default=None, ge=60, le=90 * 24 * 3600)
+
+    @model_validator(mode="after")
+    def _exactly_one_target(self) -> TokenRevocationCreate:
+        if bool(self.jti) == bool(self.subject):
+            raise ValueError("jti 与 subject 必须且只能提供一个")
+        return self
+
+
 class ContractReviewRequest(APIModel):
     text: str = Field(min_length=10, max_length=200_000)
     kb_ids: list[int] = Field(default_factory=list)
@@ -168,7 +191,7 @@ class DocumentCreate(APIModel):
 
 class KbVersionCreate(APIModel):
     version: str = Field(min_length=1, max_length=64)
-    publish: bool = True
+    publish: bool = False
 
 
 class KbAliasCreate(APIModel):
@@ -176,6 +199,14 @@ class KbAliasCreate(APIModel):
     kb_version: str
     index_version: str | None = None
     retrieval_config_id: int | None = None
+
+
+class IndexApprovalRequest(APIModel):
+    reason: str | None = Field(default=None, max_length=1024)
+
+
+class IndexRejectionRequest(APIModel):
+    reason: str = Field(min_length=1, max_length=1024)
 
 
 class KbGrantCreate(APIModel):

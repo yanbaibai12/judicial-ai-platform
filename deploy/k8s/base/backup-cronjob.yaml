@@ -46,11 +46,15 @@ spec:
                   value: /backups
                 - name: RETENTION_DAYS
                   value: "30"
-                # DATABASE_URL 由 judicial-ai-secrets 提供（backup.sh 用于 pg_dump）
+                # DATABASE_URL 由 judicial-ai-secrets 提供（backup.sh 使用 mariadb-dump）
                 - name: NEO4J_BACKUP_CMD
                   value: ""
                 - name: MINIO_ALIAS
                   value: ""
+                - name: OBJECT_STORE_BACKEND
+                  value: filesystem
+                - name: OBJECT_STORE_PATH
+                  value: /data/objects
                 - name: MC_CONFIG_DIR
                   value: /tmp/mc
               volumeMounts:
@@ -58,6 +62,9 @@ spec:
                   mountPath: /backups
                 - name: tmp
                   mountPath: /tmp
+                - name: original-documents
+                  mountPath: /data/objects
+                  readOnly: true
               resources:
                 requests:
                   cpu: 100m
@@ -76,4 +83,7 @@ spec:
                 claimName: judicial-ai-backups
             - name: tmp
               emptyDir: {}
+            - name: original-documents
+              persistentVolumeClaim:
+                claimName: judicial-ai-original-documents
 

@@ -174,6 +174,8 @@
     appToken: safeStorage.get("jai.appToken"),
     adminConnected: false,
     appConnected: false,
+    environment: "unknown",
+    demoEnabled: false,
     capabilities: null,
     kbs: null,
     metrics: null,
@@ -299,19 +301,19 @@
   }
 
   function currentCapabilities() {
-    return state.capabilities ?? demo.capabilities;
+    return state.capabilities ?? (state.demoEnabled ? demo.capabilities : []);
   }
 
   function currentKbs() {
-    return state.kbs ?? demo.kbs;
+    return state.kbs ?? (state.demoEnabled ? demo.kbs : []);
   }
 
   function currentMetrics() {
-    return state.metrics ?? demo.metrics;
+    return state.metrics ?? (state.demoEnabled ? demo.metrics : {});
   }
 
   function currentEvents() {
-    return state.events ?? demo.events;
+    return state.events ?? (state.demoEnabled ? demo.events : []);
   }
 
   function currentApps() {
@@ -319,7 +321,7 @@
   }
 
   function currentTenants() {
-    return state.tenants ?? [{ id: 1, code: "default", name: "默认租户" }];
+    return state.tenants ?? (state.demoEnabled ? [{ id: 1, code: "default", name: "默认租户" }] : []);
   }
 
   function currentDatasets() {
@@ -365,7 +367,7 @@
     if (["ACTIVE", "PUBLISHED", "READY", "SUCCESS", "PROCESSED", "COMPLETED"].includes(value)) {
       return { label: value === "PUBLISHED" ? "已发布" : value === "READY" ? "就绪" : "运行中", className: "is-ok" };
     }
-    if (["BETA", "DRAFT", "INDEXING", "NEW", "PENDING"].includes(value)) {
+    if (["BETA", "DRAFT", "INDEXING", "NEW", "PENDING", "PENDING_APPROVAL"].includes(value)) {
       return {
         label: value === "INDEXING" ? "索引中" : value === "NEW" ? "待处理" : "试运行",
         className: "is-warn",
@@ -704,11 +706,17 @@
     pill.classList.toggle("is-connected", connected);
     if (state.adminConnected) label.textContent = "已连接";
     else if (state.appConnected) label.textContent = "应用已连接";
-    else label.textContent = "示例数据";
+    else label.textContent = state.demoEnabled ? "示例数据" : "未连接";
 
     const status = $("#connectionStatus");
     if (status) {
-      status.textContent = state.adminConnected ? "已连接" : state.appConnected ? "应用已连接" : "示例数据";
+      status.textContent = state.adminConnected
+        ? "已连接"
+        : state.appConnected
+          ? "应用已连接"
+          : state.demoEnabled
+            ? "示例数据"
+            : "未连接";
       status.className = `status-pill ${state.adminConnected || state.appConnected ? "is-ok" : "is-warn"}`;
     }
     $("#adminTokenState").textContent = maskToken(state.adminToken);
@@ -892,7 +900,9 @@
         error.status = first.reason.status;
         throw error;
       }
-      if (!silent) toast("未能读取平台数据，已保留示例视图");
+      if (!silent) {
+        toast(state.demoEnabled ? "未能读取平台数据，已保留示例视图" : "未能读取平台数据");
+      }
     }
     state.adminConnected = successCount > 0;
     renderAll();
@@ -972,7 +982,7 @@
     $("#adminTokenInput").value = "";
     $("#appTokenInput").value = "";
     renderAll();
-    toast("已断开连接，当前为示例数据。");
+    toast(state.demoEnabled ? "已断开连接，当前为示例数据。" : "已断开连接。");
   }
 
   function restoreSession() {
@@ -1009,7 +1019,7 @@
   async function refreshCapabilities() {
     if (!state.adminToken) {
       renderAll();
-      toast("当前为示例数据。连接管理令牌后可读取实时能力。");
+      toast(state.demoEnabled ? "当前为示例数据。连接管理令牌后可读取实时能力。" : "连接管理令牌后可读取能力数据。");
       return;
     }
     try {
@@ -1023,7 +1033,7 @@
   async function refreshGovernance() {
     if (!state.adminToken) {
       renderAll();
-      toast("当前为示例数据。连接管理令牌后可读取实时治理数据。");
+      toast(state.demoEnabled ? "当前为示例数据。连接管理令牌后可读取实时治理数据。" : "连接管理令牌后可读取治理数据。");
       return;
     }
     try {
@@ -2036,7 +2046,19 @@
     window.setInterval(tick, 1000);
   }
 
-  function init() {
+  async function loadRuntimeMode() {
+    try {
+      const response = await fetch("/version", { headers: { Accept: "application/json" } });
+      const payload = response.ok ? await response.json() : {};
+      state.environment = String(payload.environment || "unknown").toLowerCase();
+      state.demoEnabled = !["prod", "production"].includes(state.environment);
+    } catch {
+      state.environment = "unknown";
+      state.demoEnabled = false;
+    }
+  }
+
+  async function init() {
     let storedTheme = "";
     try {
       storedTheme = localStorage.getItem("jai.theme") || "";
@@ -2046,6 +2068,7 @@
     const preferred = window.matchMedia?.("(prefers-color-scheme: dark)").matches ? "dark" : "light";
     setTheme(storedTheme || preferred);
 
+    await loadRuntimeMode();
     renderSparks();
     renderAll();
     startClock();

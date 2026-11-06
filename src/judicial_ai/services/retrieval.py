@@ -1,8 +1,7 @@
 ﻿from __future__ import annotations
 
-import io
-import json
 import logging
+import mimetypes
 import time
 from typing import Any
 
@@ -11,8 +10,9 @@ from sqlalchemy.orm import Session
 
 from ..acl import accessible_document_ids, assert_access
 from ..config import get_settings
-from ..errors import ApiError
+from ..errors import ApiError, sanitize_exception_summary
 from ..ids import new_id
+from ..metrics import record_citation_integrity, record_document_parse
 from ..models import (
     ChunkMeta,
     Document,
@@ -35,10 +35,20 @@ from ..text_utils import (
     keyword_score,
     normalize_text,
 )
-from .context_compression import compress_results
+from .context_compression import (
+    CITATION_DEGRADED,
+    CITATION_INVALID,
+    CITATION_NONE,
+    CITATION_STATUSES,
+    CITATION_VERIFIED,
+    citation_status_for,
+    compress_results,
+)
 from .decision import RetrievalPlan, plan_query
+from .document_parser import PARSED, ParsedDocument, parse_document
 from .graph_store import get_graph_store, graph_search_or_degraded
 from .inference import get_inference_client
+from .object_store import get_object_store, sha256_bytes
 from .vector_store import VectorHit, get_vector_store
 
 logger = logging.getLogger("judicial_ai.retrieval")
@@ -51,6 +61,44 @@ def _validate_embeddings(chunks: list[Any], embeddings: list[list[float]]) -> No
         len(embedding) != len(embeddings[0]) for embedding in embeddings
     )):
         raise ApiError("UPSTREAM_UNAVAILABLE", "向量为空或维度不一致", 503)
+
+
+def cleanup_index_artifacts(
+    index_version_id: int, stores: tuple[str, ...] = ("vector", "graph")
+) -> dict[str, Any]:
+    results: dict[str, Any] = {}
+    errors: list[str] = []
+    for name in stores:
+        try:
+            store = get_vector_store() if name == "vector" else get_graph_store()
+            store.delete_index(index_version_id)
+            results[name] = "deleted"
+        except Exception as exc:  # noqa: BLE001
+            message = f"{name}: {str(exc)[:240]}"
+            errors.append(message)
+            results[name] = {"status": "error", "error": str(exc)[:240]}
+    return {"status": "FAILED" if errors else "COMPLETED", "stores": results, "errors": errors}
+
+
+def _fail_index(
+    db: Session,
+    index_version: IndexVersion,
+    stats: dict[str, Any],
+    error: str,
+    *,
+    cleanup: bool,
+) -> None:
+    cleanup_result = cleanup_index_artifacts(index_version.id) if cleanup else None
+    index_version.status = "FAILED"
+    index_version.cleanup_status = (
+        cleanup_result["status"] if cleanup_result else "NOT_REQUIRED"
+    )
+    index_version.stats = {
+        **stats,
+        "error": error[:500],
+        **({"cleanup": cleanup_result} if cleanup_result else {}),
+    }
+    db.commit()
 
 
 def create_kb(db: Session, tenant_id: int, payload: KbCreate) -> KnowledgeBase:
@@ -104,11 +152,17 @@ def add_document(
     payload: DocumentCreate,
     *,
     pages: list[str] | None = None,
+    raw_content: bytes | None = None,
+    original_filename: str | None = None,
+    content_type: str | None = None,
+    parse_status: str | None = None,
+    parse_warning: str | None = None,
+    parser: str | None = None,
 ) -> tuple[Document, DocumentVersion, int, bool]:
-    digest = content_hash(
-        payload.text if pages is None else
-        "pdf-pages-v1:" + json.dumps(pages, ensure_ascii=False, separators=(",", ":"))
-    )
+    source_content = raw_content if raw_content is not None else payload.text.encode("utf-8")
+    digest = sha256_bytes(source_content)
+    filename = original_filename or "document.txt"
+    media_type = content_type or mimetypes.guess_type(filename)[0] or "application/octet-stream"
     existing = (
         db.query(Document)
         .filter(
@@ -134,10 +188,38 @@ def add_document(
         )
         if version is None:
             raise ApiError("INTERNAL_ERROR", "文档版本缺失", 500)
+        store = get_object_store()
+        if (
+            version.storage_status != "AVAILABLE"
+            or not version.object_key
+            or not store.exists(version.object_key)
+        ):
+            object_key = (
+                f"tenant-{kb.tenant_id}/kb-{kb.id}/document-{existing.id}/"
+                f"version-{version.id}/{digest}"
+            )
+            info = store.put(object_key, source_content, media_type)
+            if info.sha256 != digest:
+                store.delete(object_key)
+                raise ApiError("OBJECT_INTEGRITY_FAILED", "原件写入校验失败", 503)
+            version.object_key = object_key
+            version.content_hash = digest
+            version.original_filename = filename
+            version.content_type = media_type
+            version.object_size = len(source_content)
+            version.storage_status = "AVAILABLE"
+            existing.content_hash = digest
+            db.commit()
         return existing, version, int(count), True
 
+    document_id = new_id()
+    version_id = new_id()
+    object_key = (
+        f"tenant-{kb.tenant_id}/kb-{kb.id}/document-{document_id}/"
+        f"version-{version_id}/{digest}"
+    )
     document = Document(
-        id=new_id(),
+        id=document_id,
         tenant_id=kb.tenant_id,
         kb_id=kb.id,
         title=payload.title,
@@ -146,28 +228,33 @@ def add_document(
         source_ref=payload.source_ref,
         content_hash=digest,
         security_level=payload.security_level,
-        extra=payload.metadata,
+        extra=(
+            {**(payload.metadata or {}), "parse_parser": parser}
+            if parser
+            else payload.metadata
+        ),
         status="ACTIVE",
     )
-    db.add(document)
-    db.flush()
 
     missing_pages = [index for index, page in enumerate(pages or [], 1) if not page.strip()]
+    effective_status = parse_status or ("PARTIAL" if missing_pages else PARSED)
+    effective_warning = parse_warning
+    if effective_warning is None and missing_pages:
+        effective_warning = "部分页面未提取到文本，可能为空白页或扫描件，需人工确认"
     version = DocumentVersion(
-        id=new_id(),
+        id=version_id,
         document_id=document.id,
         version_no=1,
-        object_key="",
+        object_key=object_key,
         content_hash=digest,
+        original_filename=filename,
+        content_type=media_type,
+        object_size=len(source_content),
+        storage_status="AVAILABLE",
         page_count=len(pages) if pages is not None else None,
-        parse_status="PARTIAL" if missing_pages else "PARSED",
-        parse_error=(
-            "部分页面未提取到文本，可能为空白页或扫描件，需人工确认"
-            if missing_pages else None
-        ),
+        parse_status=effective_status,
+        parse_error=effective_warning,
     )
-    db.add(version)
-    db.flush()
 
     chunk_config = kb.chunk_config or {}
     max_chars = int(chunk_config.get("max_chars", 1000))
@@ -186,9 +273,8 @@ def add_document(
 
     embeddings = get_inference_client().embed(kb.embedding_model, chunks)
     _validate_embeddings(chunks, embeddings)
-    for index, ((chunk, page), embedding) in enumerate(zip(chunk_pages, embeddings, strict=True)):
-        db.add(
-            ChunkMeta(
+    chunk_records = [
+        ChunkMeta(
                 chunk_id=f"chk_{new_id()}",
                 tenant_id=kb.tenant_id,
                 kb_id=kb.id,
@@ -206,12 +292,32 @@ def add_document(
                     "doc_type": payload.doc_type,
                     "security_level": payload.security_level,
                     "chunk_index": index,
+                    **({"parse_parser": parser} if parser else {}),
                     **({"pages_without_text": missing_pages} if missing_pages else {}),
                 },
                 embedding=embedding,
             )
+        for index, ((chunk, page), embedding) in enumerate(
+            zip(chunk_pages, embeddings, strict=True)
         )
-    db.commit()
+    ]
+    store = get_object_store()
+    info = store.put(object_key, source_content, media_type)
+    if info.sha256 != digest:
+        store.delete(object_key)
+        raise ApiError("OBJECT_INTEGRITY_FAILED", "原件写入校验失败", 503)
+    try:
+        db.add(document)
+        db.add(version)
+        db.add_all(chunk_records)
+        db.commit()
+    except Exception:
+        db.rollback()
+        try:
+            store.delete(object_key)
+        except Exception:  # noqa: BLE001
+            logger.exception("document_object_rollback_failed", extra={"object_key": object_key})
+        raise
     db.refresh(document)
     db.refresh(version)
     return document, version, len(chunks), False
@@ -226,45 +332,51 @@ def add_document_from_file(
     doc_type: str = "file",
     security_level: str = "INTERNAL",
 ) -> tuple[Document, DocumentVersion, int, bool]:
-    text, _page_count, pages = _parse_file(filename, content)
-    if not text.strip():
-        raise ApiError("INVALID_ARGUMENT", "文件解析结果为空", 400)
+    parsed: ParsedDocument = parse_document(filename, content)
+    record_document_parse(parsed.parser, parsed.status)
+    if not parsed.text.strip():
+        raise ApiError(
+            "DOCUMENT_PARSE_FAILED",
+            parsed.warning or "文件解析结果为空，无法入库",
+            422,
+            {
+                "parser": parsed.parser,
+                "status": parsed.status,
+                "extension": filename.rsplit(".", 1)[-1].lower(),
+            },
+        )
     payload = DocumentCreate(
         title=title or filename,
-        text=text,
+        text=parsed.text,
         doc_type=doc_type,
         source="upload",
         source_ref=filename,
         security_level=security_level,
     )
-    return add_document(db, kb, payload, pages=pages)
+    return add_document(
+        db,
+        kb,
+        payload,
+        pages=parsed.pages,
+        raw_content=content,
+        original_filename=filename,
+        content_type=mimetypes.guess_type(filename)[0] or "application/octet-stream",
+        parse_status=parsed.status,
+        parse_warning=parsed.warning,
+        parser=parsed.parser,
+    )
 
 
 def parse_file(filename: str, content: bytes) -> tuple[str, int | None]:
-    text, page_count, _pages = _parse_file(filename, content)
-    return text, page_count
+    parsed = parse_document(filename, content)
+    return parsed.text, parsed.page_count
 
 
 def _parse_file(filename: str, content: bytes) -> tuple[str, int | None, list[str] | None]:
-    lower = filename.lower()
-    if lower.endswith(".pdf"):
-        from pypdf import PdfReader
+    """兼容旧签名的薄封装；新代码请直接用 `parse_document` 以获取解析状态。"""
 
-        reader = PdfReader(io.BytesIO(content))
-        pages = [page.extract_text() or "" for page in reader.pages]
-        return "\n\n".join(pages), len(pages), pages
-    if lower.endswith(".docx"):
-        from docx import Document as DocxDocument
-
-        document = DocxDocument(io.BytesIO(content))
-        parts = [paragraph.text for paragraph in document.paragraphs if paragraph.text.strip()]
-        for table in document.tables:
-            for row in table.rows:
-                cells = [cell.text.strip() for cell in row.cells if cell.text.strip()]
-                if cells:
-                    parts.append(" | ".join(cells))
-        return "\n\n".join(parts), None, None
-    return content.decode("utf-8", errors="ignore"), None, None
+    parsed = parse_document(filename, content)
+    return parsed.text, parsed.page_count, parsed.pages
 
 
 def create_kb_version(
@@ -325,6 +437,7 @@ def create_kb_version(
 
 
 def index_kb(db: Session, kb: KnowledgeBase, version: str | None = None) -> IndexVersion:
+    settings = get_settings()
     kb_version = None
     if version:
         kb_version = (
@@ -336,7 +449,7 @@ def index_kb(db: Session, kb: KnowledgeBase, version: str | None = None) -> Inde
             raise ApiError("VERSION_NOT_FOUND", "知识库版本不存在", 404, {"version": version})
     if kb_version is None:
         kb_version = create_kb_version(
-            db, kb, f"kb-{new_id()}", publish=True
+            db, kb, f"kb-{new_id()}", publish=not settings.index_require_approval
         )
     if kb_version.snapshot_state != "PARSED":
         raise ApiError(
@@ -363,7 +476,6 @@ def index_kb(db: Session, kb: KnowledgeBase, version: str | None = None) -> Inde
     db.commit()
     db.refresh(index_version)
 
-    settings = get_settings()
     chunks = [ChunkMeta(**snapshot.payload) for snapshot in snapshot_chunks]
     batch_size = 64
     all_embeddings: list[list[float]] = []
@@ -378,9 +490,13 @@ def index_kb(db: Session, kb: KnowledgeBase, version: str | None = None) -> Inde
         _validate_embeddings(chunks, all_embeddings)
     except Exception:
         db.rollback()
-        index_version.status = "FAILED"
-        index_version.stats = {"error": "embedding generation failed"}
-        db.commit()
+        _fail_index(
+            db,
+            index_version,
+            {"chunk_count": len(chunks), "vector_backend": settings.vector_backend},
+            "embedding generation failed",
+            cleanup=False,
+        )
         raise
 
     stats: dict[str, Any] = {
@@ -400,12 +516,15 @@ def index_kb(db: Session, kb: KnowledgeBase, version: str | None = None) -> Inde
             index_version.milvus_collection = str(vector_info["collection"])
     except Exception as exc:  # noqa: BLE001 - optional vector backend can degrade to SQL
         if settings.vector_backend != "sql" and not settings.vector_fallback_sql:
-            index_version.status = "FAILED"
-            index_version.stats = {**stats, "error": str(exc)[:500]}
-            db.commit()
+            _fail_index(db, index_version, stats, str(exc), cleanup=True)
             raise
+        cleanup_result = cleanup_index_artifacts(index_version.id, ("vector",))
         logger.warning("vector_index_degraded", extra={"error": str(exc)[:240]})
-        stats["vector"] = {"backend": settings.vector_backend, "degraded": True}
+        stats["vector"] = {
+            "backend": settings.vector_backend,
+            "degraded": True,
+            "cleanup": cleanup_result,
+        }
 
     if settings.graph_enabled:
         try:
@@ -415,8 +534,13 @@ def index_kb(db: Session, kb: KnowledgeBase, version: str | None = None) -> Inde
             stats["graph"] = graph_info
             index_version.neo4j_snapshot = f"{settings.graph_backend}:{index_version.id}"
         except Exception as exc:  # noqa: BLE001 - graph is optional
+            cleanup_result = cleanup_index_artifacts(index_version.id, ("graph",))
             logger.warning("graph_index_degraded", extra={"error": str(exc)[:240]})
-            stats["graph"] = {"backend": settings.graph_backend, "degraded": True}
+            stats["graph"] = {
+                "backend": settings.graph_backend,
+                "degraded": True,
+                "cleanup": cleanup_result,
+            }
 
     try:
         for chunk, embedding in zip(chunks, all_embeddings, strict=True):
@@ -427,15 +551,26 @@ def index_kb(db: Session, kb: KnowledgeBase, version: str | None = None) -> Inde
             if live_chunk is not None:
                 live_chunk.embedding = embedding
                 live_chunk.index_version_id = index_version.id
-        index_version.status = "READY"
-        index_version.published_at = utcnow()
+        index_version.status = (
+            "PENDING_APPROVAL" if settings.index_require_approval else "READY"
+        )
+        if not settings.index_require_approval:
+            kb_version.status = "PUBLISHED"
+            kb_version.published_at = kb_version.published_at or utcnow()
+        index_version.published_at = (
+            None if settings.index_require_approval else utcnow()
+        )
         index_version.stats = stats
         db.commit()
     except Exception:
         db.rollback()
-        index_version.status = "FAILED"
-        index_version.stats = {**stats, "error": "index publication failed"}
-        db.commit()
+        _fail_index(
+            db,
+            index_version,
+            stats,
+            "index publication failed",
+            cleanup=True,
+        )
         raise
     db.refresh(index_version)
     return index_version
@@ -456,6 +591,8 @@ def set_alias(
     )
     if target_kb_version is None:
         raise ApiError("VERSION_NOT_FOUND", "知识库版本不存在", 404, {"version": kb_version})
+    if alias == "prod" and target_kb_version.status != "PUBLISHED":
+        raise ApiError("RESOURCE_CONFLICT", "生产别名只能指向已发布知识版本", 409)
 
     target_index_version = None
     if index_version:
@@ -488,6 +625,185 @@ def set_alias(
     return record
 
 
+def approve_index(
+    db: Session, kb: KnowledgeBase, index_version_id: int, approved_by: str
+) -> IndexVersion:
+    index = db.query(IndexVersion).filter(
+        IndexVersion.id == index_version_id, IndexVersion.kb_id == kb.id
+    ).first()
+    if index is None:
+        raise ApiError("VERSION_NOT_FOUND", "索引版本不存在", 404)
+    if index.status != "PENDING_APPROVAL":
+        raise ApiError("RESOURCE_CONFLICT", "只有待审批索引可以批准", 409)
+    version = db.get(KbVersion, index.kb_version_id)
+    if version is None:
+        raise ApiError("VERSION_NOT_FOUND", "知识版本不存在", 404)
+    version.status = "PUBLISHED"
+    version.published_at = version.published_at or utcnow()
+    index.status = "READY"
+    index.approved_by = approved_by
+    index.approved_at = utcnow()
+    index.rejection_reason = None
+    index.published_at = utcnow()
+    db.commit()
+    db.refresh(index)
+    return index
+
+
+def reject_index(
+    db: Session,
+    kb: KnowledgeBase,
+    index_version_id: int,
+    rejected_by: str,
+    reason: str,
+) -> IndexVersion:
+    index = db.query(IndexVersion).filter(
+        IndexVersion.id == index_version_id, IndexVersion.kb_id == kb.id
+    ).first()
+    if index is None:
+        raise ApiError("VERSION_NOT_FOUND", "索引版本不存在", 404)
+    if index.status != "PENDING_APPROVAL":
+        raise ApiError("RESOURCE_CONFLICT", "只有待审批索引可以拒绝", 409)
+    cleanup = cleanup_index_artifacts(index.id)
+    index.status = "REJECTED"
+    index.approved_by = rejected_by
+    index.approved_at = utcnow()
+    index.rejection_reason = reason
+    index.cleanup_status = cleanup["status"]
+    index.stats = {**(index.stats or {}), "cleanup": cleanup}
+    db.commit()
+    db.refresh(index)
+    return index
+
+
+def reconcile_index_artifacts(
+    db: Session, *, kb_id: int | None = None, repair: bool = False
+) -> dict[str, Any]:
+    settings = get_settings()
+    query = db.query(IndexVersion)
+    if kb_id is not None:
+        query = query.filter(IndexVersion.kb_id == kb_id)
+    indexes = query.all()
+    known_ids = {int(item.id) for item in indexes}
+    backend_errors: dict[str, str] = {}
+    vector_ids: set[int] = set()
+    graph_ids: set[int] = set()
+    if settings.vector_backend == "milvus":
+        try:
+            vector_ids = get_vector_store().list_index_ids()
+        except Exception as exc:  # noqa: BLE001
+            backend_errors["vector"] = sanitize_exception_summary(exc)
+    if settings.graph_enabled:
+        try:
+            graph_ids = get_graph_store().list_index_ids()
+        except Exception as exc:  # noqa: BLE001
+            backend_errors["graph"] = sanitize_exception_summary(exc)
+    issues: list[dict[str, Any]] = []
+
+    for index in indexes:
+        stats = index.stats or {}
+        expected_chunks = int(stats.get("chunk_count") or 0)
+        snapshot_count = db.query(func.count(IndexChunkSnapshot.chunk_id)).filter(
+            IndexChunkSnapshot.index_version_id == index.id
+        ).scalar() or 0
+        vector = stats.get("vector") or {}
+        graph = stats.get("graph") or {}
+        expected_vector = (
+            index.status in {"READY", "PENDING_APPROVAL"}
+            and expected_chunks > 0
+            and vector.get("backend") == "milvus"
+            and not vector.get("degraded")
+        )
+        expected_graph = (
+            index.status in {"READY", "PENDING_APPROVAL"}
+            and graph.get("backend") == "neo4j"
+            and not graph.get("degraded")
+            and int(graph.get("entities") or 0) > 0
+        )
+        reasons: list[str] = []
+        if index.status in {"READY", "PENDING_APPROVAL"} and snapshot_count != expected_chunks:
+            reasons.append("snapshot_count_mismatch")
+        if expected_vector and index.id not in vector_ids:
+            reasons.append("vector_artifact_missing")
+        if expected_graph and index.id not in graph_ids:
+            reasons.append("graph_artifact_missing")
+        if index.status in {"FAILED", "REJECTED", "STALE"} and (
+            index.id in vector_ids or index.id in graph_ids
+        ):
+            reasons.append("failed_index_artifacts_present")
+        if not reasons:
+            continue
+        issue = {
+            "index_version_id": index.id,
+            "kb_id": index.kb_id,
+            "status": index.status,
+            "reasons": reasons,
+            "snapshot_count": int(snapshot_count),
+            "expected_chunks": expected_chunks,
+            "repaired": False,
+        }
+        if repair:
+            cleanup = cleanup_index_artifacts(index.id)
+            index.cleanup_status = cleanup["status"]
+            index.stats = {**stats, "cleanup": cleanup, "reconcile_reasons": reasons}
+            if index.status in {"READY", "PENDING_APPROVAL"}:
+                index.status = "FAILED"
+            db.query(KbAlias).filter(KbAlias.index_version_id == index.id).update(
+                {"index_version_id": None}, synchronize_session=False
+            )
+            issue["cleanup"] = cleanup
+            issue["repaired"] = cleanup["status"] == "COMPLETED"
+        issues.append(issue)
+
+    orphan_vector = sorted(vector_ids - known_ids)
+    orphan_graph = sorted(graph_ids - known_ids)
+    orphan_repairs: list[dict[str, Any]] = []
+    if repair:
+        for index_id in sorted(set(orphan_vector) | set(orphan_graph)):
+            stores: list[str] = []
+            if index_id in orphan_vector:
+                stores.append("vector")
+            if index_id in orphan_graph:
+                stores.append("graph")
+            cleanup = cleanup_index_artifacts(index_id, tuple(stores))
+            orphan_repairs.append(
+                {"index_version_id": index_id, "stores": stores, "cleanup": cleanup}
+            )
+        db.commit()
+    return {
+        "checked": len(indexes),
+        "issues": issues,
+        "orphan_vector_index_ids": orphan_vector,
+        "orphan_graph_index_ids": orphan_graph,
+        "orphan_repairs": orphan_repairs,
+        "backend_errors": backend_errors,
+        "repair": repair,
+    }
+
+
+def recover_index(
+    db: Session, kb: KnowledgeBase, index_version_id: int
+) -> tuple[IndexVersion, IndexVersion]:
+    previous = db.query(IndexVersion).filter(
+        IndexVersion.id == index_version_id, IndexVersion.kb_id == kb.id
+    ).first()
+    if previous is None:
+        raise ApiError("VERSION_NOT_FOUND", "索引版本不存在", 404)
+    version = db.get(KbVersion, previous.kb_version_id)
+    if version is None or version.snapshot_state != "PARSED":
+        raise ApiError("RESOURCE_CONFLICT", "索引对应的知识快照不可重建", 409)
+    cleanup = cleanup_index_artifacts(previous.id)
+    previous.status = "SUPERSEDED"
+    previous.cleanup_status = cleanup["status"]
+    previous.stats = {**(previous.stats or {}), "cleanup": cleanup}
+    db.query(KbAlias).filter(KbAlias.index_version_id == previous.id).update(
+        {"index_version_id": None}, synchronize_session=False
+    )
+    db.commit()
+    replacement = index_kb(db, kb, version.version)
+    return previous, replacement
+
+
 def resolve_versions(
     db: Session, kb: KnowledgeBase, kb_version_alias: str, index_version: str | None
 ) -> tuple[KbVersion, IndexVersion | None]:
@@ -504,6 +820,8 @@ def resolve_versions(
             .first()
         )
         if kb_version is None and kb_version_alias == "prod":
+            if get_settings().require_prod_alias:
+                raise ApiError("VERSION_NOT_FOUND", "生产别名尚未配置", 404, {"alias": "prod"})
             ready_index = (
                 db.query(IndexVersion)
                 .join(KbVersion, KbVersion.id == IndexVersion.kb_version_id)
@@ -544,6 +862,33 @@ def resolve_versions(
     ):
         raise ApiError("RESOURCE_CONFLICT", "索引尚未就绪或不属于指定知识库版本", 409)
     return kb_version, index
+
+
+def filter_low_relevance(
+    scored: list[dict[str, Any]], min_dense: float, min_keyword: float = 0.0
+) -> tuple[list[dict[str, Any]], int]:
+    """按原始召回信号丢弃低相关候选，返回 ``(保留项, 被过滤数量)``。
+
+    两个阈值都为 0 时原样返回（保持历史行为）。启用后保留条件为：
+    dense 达到 ``min_dense``，或关键词达到 ``min_keyword``。
+
+    注意：关键词分数只要有一个 token 重叠就 > 0，用 ``keyword > 0`` 做豁免会让阈值
+    形同虚设，因此这里必须比较具体阈值。
+    """
+
+    if min_dense <= 0 and min_keyword <= 0:
+        return scored, 0
+
+    kept: list[dict[str, Any]] = []
+    filtered = 0
+    for item in scored:
+        dense_ok = min_dense > 0 and float(item.get("dense") or 0.0) >= min_dense
+        keyword_ok = min_keyword > 0 and float(item.get("keyword") or 0.0) >= min_keyword
+        if dense_ok or keyword_ok:
+            kept.append(item)
+        else:
+            filtered += 1
+    return kept, filtered
 
 
 def _match_filters(chunk: ChunkMeta, filters: dict[str, Any]) -> bool:
@@ -624,6 +969,36 @@ def _graph_payload(
         "degraded": result.degraded or missing_graph,
         "backend": result.backend,
     }
+
+
+def _annotate_citations(
+    results: list[dict[str, Any]],
+) -> tuple[dict[str, int], str]:
+    """给每条结果标注引用可信度，并汇总整体状态（未压缩路径使用）。"""
+
+    counts: dict[str, int] = {status: 0 for status in CITATION_STATUSES}
+    for item in results:
+        status = citation_status_for(
+            str(item.get("text") or ""),
+            item.get("chunk_id"),
+            item.get("citation"),
+        )
+        item["citation_status"] = status
+        if status in counts:
+            counts[status] += 1
+        citation = item.get("citation")
+        if isinstance(citation, dict):
+            citation.setdefault("status", status)
+
+    if counts[CITATION_INVALID]:
+        overall = CITATION_INVALID
+    elif counts[CITATION_DEGRADED]:
+        overall = CITATION_DEGRADED
+    elif counts[CITATION_VERIFIED]:
+        overall = CITATION_VERIFIED
+    else:
+        overall = CITATION_NONE
+    return counts, overall
 
 
 def retrieve(
@@ -827,6 +1202,15 @@ def retrieve(
             if keyword_rank[chunk_id] <= max(top_k * 3, 20):
                 item["recall_sources"].append("keyword")
 
+    # 相关性下限：RRF 归一化后 top1 恒为 0.6，无法用作绝对阈值，
+    # 因此用原始召回信号（dense 分数 / 关键词命中）判断"是否值得返回"。
+    # 关闭时（默认 0）保持历史行为。
+    scored, filtered_low_relevance = filter_low_relevance(
+        scored,
+        settings.rag_min_dense_score,
+        settings.rag_min_keyword_score,
+    )
+
     if not scored:
         empty_response: dict[str, Any] = {
             "query": query,
@@ -844,10 +1228,16 @@ def retrieve(
             "usage": {
                 "total_ms": int((time.perf_counter() - started) * 1000),
                 "recall_mode": recall_mode,
+                "filtered_low_relevance": filtered_low_relevance,
             },
         }
         if plan is not None:
             empty_response["decision"] = plan.to_dict()
+        empty_response["citation"] = {
+            "status": CITATION_NONE,
+            "counts": {status: 0 for status in CITATION_STATUSES},
+            "review_required": False,
+        }
         if compress:
             empty_response["compression"] = {"enabled": False, "reason": "no_results"}
         return empty_response
@@ -927,6 +1317,8 @@ def retrieve(
         )
 
     compression: dict[str, Any] | None = None
+    citation_counts: dict[str, int]
+    citation_overall: str
     if compress:
         if settings.rag_compression_enabled and plan is not None:
             results, compression = compress_results(
@@ -935,8 +1327,26 @@ def retrieve(
                 plan,
                 total_budget_chars=plan.context_budget_chars,
             )
+            citation_counts = compression.get("citation_counts") or {
+                status: 0 for status in CITATION_STATUSES
+            }
+            citation_overall = compression.get("citation_status") or CITATION_NONE
         else:
             compression = {"enabled": False, "reason": "disabled"}
+            citation_counts, citation_overall = _annotate_citations(results)
+    else:
+        citation_counts, citation_overall = _annotate_citations(results)
+
+    record_citation_integrity(citation_overall)
+    if citation_overall in (CITATION_DEGRADED, CITATION_INVALID):
+        logger.warning(
+            "citation_integrity_degraded",
+            extra={
+                "status": citation_overall,
+                "counts": citation_counts,
+                "kb_ids": [kb.id for kb in kbs],
+            },
+        )
 
     total_ms = int((time.perf_counter() - started) * 1000)
     response: dict[str, Any] = {
@@ -957,6 +1367,12 @@ def retrieve(
             "rerank_ms": rerank_ms,
             "total_ms": total_ms,
             "recall_mode": recall_mode,
+            "filtered_low_relevance": filtered_low_relevance,
+        },
+        "citation": {
+            "status": citation_overall,
+            "counts": citation_counts,
+            "review_required": citation_overall in (CITATION_DEGRADED, CITATION_INVALID),
         },
     }
     if plan is not None:
@@ -1018,6 +1434,10 @@ def index_to_dict(index: IndexVersion) -> dict[str, Any]:
         "embedding_model": index.embedding_model,
         "status": index.status,
         "stats": index.stats or {},
+        "approved_by": index.approved_by,
+        "approved_at": index.approved_at.isoformat() if index.approved_at else None,
+        "rejection_reason": index.rejection_reason,
+        "cleanup_status": index.cleanup_status,
         "published_at": index.published_at.isoformat() if index.published_at else None,
     }
 

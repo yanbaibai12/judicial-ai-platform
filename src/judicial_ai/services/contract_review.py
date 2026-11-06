@@ -20,6 +20,7 @@ from sqlalchemy.orm import Session
 from ..config import get_settings
 from ..errors import ApiError
 from ..security import Principal
+from ..text_utils import bound_text
 from .retrieval import retrieve
 
 logger = logging.getLogger("judicial_ai.contract_review")
@@ -35,6 +36,8 @@ _CLAUSE_SPLIT = re.compile(
 
 
 def split_clauses(text: str) -> list[str]:
+    """按段落与「第X条」切分条款；扫描前套长度门限以限定正则耗时。"""
+    text, _ = bound_text(text)
     raw = re.split(r"\n\s*\n", text)
     clauses: list[str] = []
     for block in raw:

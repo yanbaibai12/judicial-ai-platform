@@ -6,6 +6,7 @@ from functools import lru_cache
 from typing import Any
 
 from ..config import get_settings
+from ..errors import sanitize_exception_summary
 from ..models import ChunkMeta, IndexVersion, KnowledgeBase
 from ..text_utils import sparse_vector
 
@@ -51,6 +52,9 @@ class VectorStore:
 
     def delete_index(self, index_version_id: int) -> None:
         return None
+
+    def list_index_ids(self) -> set[int]:
+        return set()
 
     def collection_name(self, index_version_id: int) -> str:
         return ""
@@ -305,6 +309,19 @@ class MilvusVectorStore(VectorStore):
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning("milvus_delete_failed", extra={"error": str(exc)[:240]})
+            raise
+
+    def list_index_ids(self) -> set[int]:
+        prefix = f"{self._settings.milvus_collection_prefix}_"
+        result: set[int] = set()
+        for name in self._client.list_collections():
+            if not name.startswith(prefix):
+                continue
+            try:
+                result.add(int(name[len(prefix) :]))
+            except ValueError:
+                continue
+        return result
 
     def health(self) -> dict[str, Any]:
         try:
@@ -315,7 +332,11 @@ class MilvusVectorStore(VectorStore):
                 "collections": len(collections),
             }
         except Exception as exc:  # noqa: BLE001
-            return {"status": "error", "backend": "milvus", "error": str(exc)[:240]}
+            return {
+                "status": "error",
+                "backend": "milvus",
+                "error": sanitize_exception_summary(exc),
+            }
 
 
 @lru_cache

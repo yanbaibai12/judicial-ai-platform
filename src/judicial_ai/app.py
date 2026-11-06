@@ -15,9 +15,26 @@ from .db import init_db
 from .errors import register_exception_handlers
 from .logging import setup_logging
 from .middleware import RequestContextMiddleware
+from .services.graph_store import close_graph_store
 
 DEFAULT_MODULES = ["health", "auth", "admin", "gateway", "retrieval", "mcp", "governance", "jobs"]
 STATIC_DIR = Path(__file__).parent / "static"
+
+_DEV_HASH_SECRET = "dev-api-key-hash-secret"
+
+
+def _hash_secret_invalid(secret: str) -> bool:
+    return not secret or secret == _DEV_HASH_SECRET or len(secret) < 32
+
+
+def _legacy_hash_secrets(settings) -> list[str]:  # type: ignore[no-untyped-def]
+    raw = getattr(settings, "api_key_hash_legacy_secrets", "") or ""
+    return [item.strip() for item in raw.split(",") if item.strip()]
+
+
+def _hash_secrets_not_distinct(settings) -> bool:  # type: ignore[no-untyped-def]
+    secrets_in_use = [settings.api_key_hash_secret, *_legacy_hash_secrets(settings)]
+    return len(secrets_in_use) != len(set(secrets_in_use))
 
 
 @asynccontextmanager
@@ -25,8 +42,16 @@ async def lifespan(app: FastAPI):
     settings = get_settings()
     setup_logging(settings.log_level)
     if settings.is_production:
-        if settings.allow_static_admin and settings.admin_token == "dev-admin-token":
-            raise RuntimeError("生产环境必须配置安全的 ADMIN_TOKEN，或关闭静态管理员令牌")
+        if settings.allow_static_admin:
+            raise RuntimeError("生产环境必须关闭静态管理员令牌 ALLOW_STATIC_ADMIN")
+        if _hash_secret_invalid(settings.api_key_hash_secret):
+            raise RuntimeError("生产环境必须配置至少 32 字符的 API_KEY_HASH_SECRET")
+        if any(_hash_secret_invalid(item) for item in _legacy_hash_secrets(settings)):
+            raise RuntimeError(
+                "生产环境 API_KEY_HASH_LEGACY_SECRETS 各项必须至少 32 字符且不得使用默认值"
+            )
+        if _hash_secrets_not_distinct(settings):
+            raise RuntimeError("API_KEY_HASH_SECRET 与 legacy 列表不得重复，密钥轮换未生效")
         if settings.cors_origin_list == ["*"]:
             raise RuntimeError("生产环境必须显式配置 CORS_ORIGINS，禁止使用通配符")
         if settings.is_sqlite:
@@ -35,8 +60,15 @@ async def lifespan(app: FastAPI):
             raise RuntimeError("生产环境必须启用 RESOURCE_ACL_ENFORCED")
         if settings.inference_mode != "proxy":
             raise RuntimeError("生产环境禁止使用 mock 推理")
+        if not settings.index_require_approval:
+            raise RuntimeError("生产环境必须启用 INDEX_REQUIRE_APPROVAL")
+        if not settings.require_prod_alias:
+            raise RuntimeError("生产环境必须启用 REQUIRE_PROD_ALIAS")
     init_db()
-    yield
+    try:
+        yield
+    finally:
+        close_graph_store()
 
 
 def create_app(modules: list[str] | None = None) -> FastAPI:

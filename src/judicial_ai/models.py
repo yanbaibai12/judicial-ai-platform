@@ -50,6 +50,7 @@ class App(Base):
     owner = Column(String(64), nullable=False, default="")
     status = Column(String(16), nullable=False, default="ACTIVE")
     description = Column(String(512))
+    permissions = Column(JSON, nullable=False, default=lambda: ["app:invoke"])
     extra = Column("metadata", JSON, default=dict)
     created_at = Column(DateTime, nullable=False, default=utcnow)
     updated_at = Column(DateTime, nullable=False, default=utcnow, onupdate=utcnow)
@@ -66,6 +67,7 @@ class AppCredential(Base):
     credential_type = Column(String(16), nullable=False, default="API_KEY")
     key_hash = Column(String(128), nullable=False, unique=True)
     key_prefix = Column(String(16), nullable=False)
+    hash_algo = Column(String(16), nullable=True)
     status = Column(String(16), nullable=False, default="ACTIVE")
     expires_at = Column(DateTime)
     last_used_at = Column(DateTime)
@@ -313,6 +315,9 @@ class DatasetVersion(Base):
     dataset_id = Column(BigInteger, nullable=False, index=True)
     version = Column(String(64), nullable=False)
     status = Column(String(16), nullable=False, default="DRAFT")
+    content_hash = Column(String(64))
+    redaction_rule_version = Column(String(64))
+    frozen_at = Column(DateTime)
     source_snapshot = Column(JSON)
     filter_config = Column(JSON)
     prelabel_model = Column(String(128))
@@ -324,6 +329,11 @@ class DatasetVersion(Base):
     published_at = Column(DateTime)
 
     __table_args__ = (UniqueConstraint("dataset_id", "version", name="uk_dataset_version"),)
+
+    @property
+    def is_frozen(self) -> bool:
+        """发布/冻结后版本不可变；写入必须被拒绝并审计。"""
+        return self.status == "PUBLISHED"
 
 
 class DatasetItem(Base):
@@ -434,6 +444,14 @@ class DocumentVersion(Base):
     version_no = Column(Integer, nullable=False, default=1)
     object_key = Column(String(512), nullable=False, default="")
     content_hash = Column(String(128), nullable=False)
+    original_filename = Column(String(512))
+    content_type = Column(String(255))
+    object_size = Column(BigInteger)
+    storage_status = Column(
+        String(24), nullable=False, default="AVAILABLE", server_default="LEGACY_MISSING"
+    )
+    retention_until = Column(DateTime)
+    deleted_at = Column(DateTime)
     page_count = Column(Integer)
     parse_status = Column(String(16), nullable=False, default="PARSED")
     parse_error = Column(String(1024))
@@ -478,6 +496,10 @@ class IndexVersion(Base):
     embedding_model = Column(String(128), nullable=False)
     status = Column(String(16), nullable=False, default="BUILDING")
     stats = Column(JSON)
+    approved_by = Column(String(256))
+    approved_at = Column(DateTime)
+    rejection_reason = Column(String(1024))
+    cleanup_status = Column(String(24), nullable=False, default="NOT_REQUIRED")
     created_at = Column(DateTime, nullable=False, default=utcnow)
     published_at = Column(DateTime)
 
@@ -778,4 +800,31 @@ class ResourceGrant(Base):
             name="uk_resource_grant_subject",
         ),
         Index("idx_resource_grant_subject", "subject_kind", "subject_id"),
+    )
+
+
+class TokenRevocation(Base):
+    """OIDC 令牌撤销记录。
+
+    - ``kind="jti"``：按单令牌撤销，``value`` 为 JWT 的 jti。
+    - ``kind="subject"``：按主体批量撤销，``value`` 为 sub，``revoked_before``
+      之前签发的令牌全部失效（用于"踢下线/离职/降权立即生效"）。
+
+    记录带 ``expires_at``，过期后可被清理任务删除；撤销判定也会忽略过期记录。
+    """
+
+    __tablename__ = "token_revocation"
+
+    id = Column(BigInteger, primary_key=True, default=new_id)
+    kind = Column(String(16), nullable=False)  # jti | subject
+    value = Column(String(256), nullable=False)
+    reason = Column(String(256))
+    revoked_before = Column(DateTime)
+    expires_at = Column(DateTime)
+    created_by = Column(String(128), nullable=False, default="")
+    created_at = Column(DateTime, nullable=False, default=utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("kind", "value", name="uk_token_revocation"),
+        Index("idx_token_revocation_kind_value", "kind", "value"),
     )
