@@ -95,6 +95,7 @@ uv run uvicorn judicial_ai.main:app --reload --port 8080
 - 容器编排：[deploy/compose/docker-compose.yml](deploy/compose/docker-compose.yml)
 - K8s/Kustomize：[deploy/k8s/base](deploy/k8s/base)
 - 生产就绪矩阵：[docs/12-生产就绪矩阵.md](docs/12-生产就绪矩阵.md)
+- 设计、实现与验收证据对照：[docs/16-设计实现与试点验收.md](docs/16-设计实现与试点验收.md)
 
 已实现：能力注册/发布/授权、统一网关、OpenAI 兼容 Chat/Embeddings/Rerank/SSE、知识库与混合检索、引用溯源、原件归档/哈希/授权下载/保留期删除恢复、应用权限 scope、索引审批与显式生产别名、跨存储补偿和对账恢复、MCP 工具注册与调用、反馈/Bad Case/数据集、用量与审计、AI 数据治理闭环、Milvus/Neo4j/Redis 适配器、异步 Worker、OIDC/LDAP、权限与安全头、Prometheus 指标、Alembic、K8s/备份/CI、Python/Java SDK、Forge SDD Skills。
 
