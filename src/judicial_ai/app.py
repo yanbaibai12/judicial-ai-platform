@@ -10,7 +10,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from .api import admin, auth, gateway, governance, health, jobs, mcp, retrieval
-from .config import get_settings
+from .config import Settings, get_settings
 from .db import init_db
 from .errors import register_exception_handlers
 from .logging import setup_logging
@@ -21,6 +21,56 @@ DEFAULT_MODULES = ["health", "auth", "admin", "gateway", "retrieval", "mcp", "go
 STATIC_DIR = Path(__file__).parent / "static"
 
 _DEV_HASH_SECRET = "dev-api-key-hash-secret"
+
+# 错误列表只包含配置项和稳定的错误类别，避免把秘密值写入启动错误。
+def delivery_configuration_errors(settings: Settings) -> list[str]:
+    if not settings.is_delivery_environment:
+        return []
+    errors: list[str] = []
+    if settings.is_production and settings.allow_static_admin:
+        errors.append("ALLOW_STATIC_ADMIN")
+    if _hash_secret_invalid(settings.api_key_hash_secret):
+        errors.append("API_KEY_HASH_SECRET")
+    if any(_hash_secret_invalid(item) for item in _legacy_hash_secrets(settings)):
+        errors.append("API_KEY_HASH_LEGACY_SECRETS")
+    if _hash_secrets_not_distinct(settings):
+        errors.append("API_KEY_HASH_SECRET/legacy duplicates")
+    if settings.cors_origin_list == ["*"]:
+        errors.append("CORS_ORIGINS")
+    if settings.trusted_host_list == ["*"]:
+        errors.append("TRUSTED_HOSTS")
+    if not settings.hsts_enabled:
+        errors.append("HSTS_ENABLED")
+    if settings.is_sqlite:
+        errors.append("DATABASE_URL")
+    if settings.auto_create_schema:
+        errors.append("AUTO_CREATE_SCHEMA")
+    if not settings.resource_acl_enforced:
+        errors.append("RESOURCE_ACL_ENFORCED")
+    if settings.inference_mode != "proxy":
+        errors.append("INFERENCE_MODE")
+    if not settings.index_require_approval:
+        errors.append("INDEX_REQUIRE_APPROVAL")
+    if not settings.require_prod_alias:
+        errors.append("REQUIRE_PROD_ALIAS")
+    if settings.vector_backend != "milvus":
+        errors.append("VECTOR_BACKEND")
+    if settings.vector_fallback_sql:
+        errors.append("VECTOR_FALLBACK_SQL")
+    if settings.graph_enabled and settings.graph_backend != "neo4j":
+        errors.append("GRAPH_BACKEND")
+    if settings.graph_fail_open:
+        errors.append("GRAPH_FAIL_OPEN")
+    if settings.rate_limit_enabled and (not settings.redis_url or settings.rate_limit_fail_open):
+        errors.append("REDIS_RATE_LIMIT")
+    if settings.job_mode != "worker":
+        errors.append("JOB_MODE")
+    if settings.contract_review_enabled:
+        errors.append("CONTRACT_REVIEW_ENABLED")
+    if settings.console_demo_mode:
+        errors.append("CONSOLE_DEMO_MODE")
+    return errors
+
 
 
 def _hash_secret_invalid(secret: str) -> bool:
@@ -41,29 +91,11 @@ def _hash_secrets_not_distinct(settings) -> bool:  # type: ignore[no-untyped-def
 async def lifespan(app: FastAPI):
     settings = get_settings()
     setup_logging(settings.log_level)
-    if settings.is_production:
-        if settings.allow_static_admin:
-            raise RuntimeError("生产环境必须关闭静态管理员令牌 ALLOW_STATIC_ADMIN")
-        if _hash_secret_invalid(settings.api_key_hash_secret):
-            raise RuntimeError("生产环境必须配置至少 32 字符的 API_KEY_HASH_SECRET")
-        if any(_hash_secret_invalid(item) for item in _legacy_hash_secrets(settings)):
-            raise RuntimeError(
-                "生产环境 API_KEY_HASH_LEGACY_SECRETS 各项必须至少 32 字符且不得使用默认值"
-            )
-        if _hash_secrets_not_distinct(settings):
-            raise RuntimeError("API_KEY_HASH_SECRET 与 legacy 列表不得重复，密钥轮换未生效")
-        if settings.cors_origin_list == ["*"]:
-            raise RuntimeError("生产环境必须显式配置 CORS_ORIGINS，禁止使用通配符")
-        if settings.is_sqlite:
-            raise RuntimeError("生产环境禁止使用 SQLite，请配置 MySQL")
-        if not settings.resource_acl_enforced:
-            raise RuntimeError("生产环境必须启用 RESOURCE_ACL_ENFORCED")
-        if settings.inference_mode != "proxy":
-            raise RuntimeError("生产环境禁止使用 mock 推理")
-        if not settings.index_require_approval:
-            raise RuntimeError("生产环境必须启用 INDEX_REQUIRE_APPROVAL")
-        if not settings.require_prod_alias:
-            raise RuntimeError("生产环境必须启用 REQUIRE_PROD_ALIAS")
+    errors = delivery_configuration_errors(settings)
+    if errors:
+        raise RuntimeError(
+            "交付环境配置校验失败：" + ", ".join(errors) + "; 请运行 scripts/check_env.py"
+        )
     init_db()
     try:
         yield

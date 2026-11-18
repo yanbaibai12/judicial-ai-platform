@@ -165,7 +165,7 @@ def review_contract(
 ) -> dict[str, Any]:
     """审查合同文本，返回风险清单 + 必备条款缺失 + 法条引用。"""
     settings = get_settings()
-    if settings.is_production or not settings.contract_review_enabled:
+    if settings.is_delivery_environment or not settings.contract_review_enabled:
         raise ApiError("FEATURE_DISABLED", "示例合同审查未开放，请使用经审核的业务流程", 503)
     started = time.perf_counter()
     if not text or not text.strip():

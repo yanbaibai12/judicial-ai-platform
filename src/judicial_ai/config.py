@@ -19,6 +19,7 @@ class Settings(BaseSettings):
     app_env: str = "dev"
     log_level: str = "INFO"
     docs_enabled: bool = True
+    console_demo_mode: bool = False
 
     database_url: str = "sqlite:///./data/judicial_ai.db"
     data_dir: str = "./data"
@@ -175,6 +176,10 @@ class Settings(BaseSettings):
     @property
     def is_production(self) -> bool:
         return self.app_env.lower() in {"prod", "production"}
+
+    @property
+    def is_delivery_environment(self) -> bool:
+        return self.app_env.lower() in {"staging", "prod", "production"}
 
     @property
     def cors_origin_list(self) -> list[str]:
