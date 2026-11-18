@@ -9,7 +9,7 @@
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%230c1b2a'/%3E%3Cpath d='M20 18h24v5H20zm2 10h20v20H22zm5 5v10h10V33z' fill='%23d2b170'/%3E%3C/svg%3E">
   <link rel="stylesheet" href="/console/app.css?v=1">
 </head>
-<body>
+<body class="initializing">
   <a class="skip-link" href="#main">跳到主要内容</a>
 
   <svg class="svg-sprite" aria-hidden="true" focusable="false">
@@ -107,8 +107,8 @@
 
       <div class="sidebar-foot">
         <div class="system-state">
-          <span class="status-dot is-ok"></span>
-          <div><strong>所有系统运行正常</strong><small>最后检查 12 秒前</small></div>
+          <span class="status-dot is-warn" id="healthDot"></span>
+          <div><strong id="healthLabel">健康状态未探测</strong><small id="healthDetail">等待检查</small></div>
         </div>
         <a class="sidebar-link" href="/docs" target="_blank" rel="noreferrer">
           <svg><use href="#i-link"></use></svg><span>API 文档</span><svg class="tiny-arrow"><use href="#i-arrow-up-right"></use></svg>
@@ -125,7 +125,7 @@
             <svg><use href="#i-menu"></use></svg>
           </button>
           <div class="breadcrumb">
-            <span>省法院</span><i>/</i><strong id="breadcrumbCurrent">总览</strong>
+            <span>控制台</span><i>/</i><strong id="breadcrumbCurrent">总览</strong>
           </div>
         </div>
         <div class="topbar-actions">
@@ -140,10 +140,10 @@
           </button>
           <button class="connection-pill" type="button" data-open-token>
             <span class="connection-dot"></span>
-            <span id="connectionLabel">示例数据</span>
+            <span id="connectionLabel">未连接</span>
             <svg><use href="#i-chevron-right"></use></svg>
           </button>
-          <div class="avatar" title="平台管理员">管</div>
+          <div class="avatar" title="当前会话">会</div>
         </div>
       </header>
 
@@ -152,7 +152,7 @@
           <div class="hero">
             <div class="hero-lines" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></div>
             <div class="hero-copy">
-              <div class="eyebrow"><span class="live-dot"></span>平台运行平稳<span class="eyebrow-sep"></span><time id="todayLabel">2026 年 10 月 20 日</time></div>
+              <div class="eyebrow"><span id="dashboardStatus">未连接</span><span class="eyebrow-sep"></span><time id="todayLabel"></time></div>
               <h1>司法智能，<span class="serif-em">有据可循。</span></h1>
               <p>统一模型推理、公共检索、MCP 工具与数据治理。每一次智能调用，都有可审计的轨迹。</p>
               <div class="hero-actions">
@@ -167,7 +167,7 @@
             <div class="hero-panel">
               <div class="hero-panel-head">
                 <span><svg><use href="#i-activity"></use></svg>系统脉搏</span>
-                <em>近 24 小时</em>
+                <em>治理事件累计</em>
               </div>
               <div class="pulse-row">
                 <div class="pulse-gauge" id="pulseGauge" style="--value: 99.2">
@@ -191,9 +191,9 @@
 
           <div class="stat-grid">
             <article class="stat-card">
-              <div class="stat-top"><span>平台调用</span><svg><use href="#i-activity"></use></svg></div>
+              <div class="stat-top"><span>治理事件累计</span><svg><use href="#i-activity"></use></svg></div>
               <div class="stat-value"><strong id="statCalls">12,847</strong><span class="trend is-up">+12.4%</span></div>
-              <div class="stat-foot"><span>治理事件累计</span><span>模型与检索合计</span></div>
+              <div class="stat-foot"><span>所有治理事件类型</span></div>
               <div class="spark" data-spark="38,44,41,54,49,63,58,72,69,82,78,91"></div>
             </article>
             <article class="stat-card">
@@ -465,7 +465,7 @@
                   </div>
                 </div>
                 <div class="composer-foot">
-                  <span class="composer-note" id="retrievalHint"><svg><use href="#i-lock"></use></svg>未连接应用令牌时展示预览结果</span>
+                  <span class="composer-note" id="retrievalHint"><svg><use href="#i-lock"></use></svg>连接应用令牌后可检索</span>
                   <button class="btn btn-primary" type="submit" id="runRetrieval"><svg><use href="#i-search"></use></svg>运行检索</button>
                 </div>
               </form>
@@ -515,7 +515,7 @@
             </aside>
           </div>
 
-          <article class="card results-card" id="retrievalResults">
+          <article class="card results-card" id="retrievalResults" hidden>
             <div class="results-head">
               <div><span class="card-kicker">RESULTS</span><h2>证据预览</h2></div>
               <div class="result-meta" id="retrievalMeta"><span>3 条证据</span><i></i><span>耗时 312ms</span><i></i><span>压缩 41%</span></div>
@@ -644,7 +644,7 @@
                 <div class="feedback-score"><strong id="feedbackRate">91.4</strong><span>% 正向</span><small>1,996 / 2,184 条有效反馈</small></div>
                 <div class="feedback-bars">
                   <div><span>正向</span><i style="width:91.4%"></i><strong>1,996</strong></div>
-                  <div><span>负向</span><i class="is-rose" style="width:8.6%"></i><strong>188</strong></div>
+                  <div><span>非正向</span><i class="is-rose" style="width:8.6%"></i><strong>188</strong></div>
                 </div>
               </div>
             </article>
@@ -676,14 +676,14 @@
             <article class="card settings-card connection-card">
               <div class="card-head">
                 <div><span class="card-kicker">CONNECTION</span><h2>平台连接</h2></div>
-                <span class="status-pill is-ok" id="connectionStatus">示例数据</span>
+                <span class="status-pill is-warn" id="connectionStatus">未连接</span>
               </div>
               <p>连接后，控制台将读取真实的能力、知识库、治理指标与事件流。</p>
               <dl class="settings-list">
                 <div><dt>API 地址</dt><dd id="settingsBaseUrl">当前源</dd></div>
                 <div><dt>管理令牌</dt><dd id="adminTokenState">未配置</dd></div>
                 <div><dt>应用令牌</dt><dd id="appTokenState">未配置</dd></div>
-                <div><dt>运行环境</dt><dd><span class="status-dot is-ok"></span>本地 / 内网</dd></div>
+                <div><dt>运行环境</dt><dd id="runtimeEnvironment">未知</dd></div>
               </dl>
               <div class="settings-actions">
                 <button class="btn btn-primary" type="button" data-open-token><svg><use href="#i-lock"></use></svg>管理连接</button>
@@ -897,7 +897,7 @@
         <div><span class="page-kicker">INGEST DOCUMENT</span><h2 id="documentTitle">上传文档</h2></div>
         <button class="icon-btn" type="button" data-close-dialog="documentDialog" aria-label="关闭"><svg><use href="#i-close"></use></svg></button>
       </div>
-      <p class="dialog-copy">支持纯文本、PDF、DOCX。上传后可选择立即构建索引。</p>
+      <p class="dialog-copy">支持纯文本、PDF、DOCX。服务启用自动索引时，上传后会自动提交索引任务。</p>
       <div class="form-grid">
         <label class="dialog-field"><span>目标知识库</span><select id="documentKb" required></select></label>
         <label class="dialog-field"><span>安全级别</span><select id="documentSecurity"><option value="INTERNAL">内部</option><option value="CONFIDENTIAL">机密</option><option value="PUBLIC">公开</option></select></label>
@@ -905,7 +905,7 @@
         <label class="dialog-field form-full"><span>选择文件 <em>PDF / DOCX / TXT</em></span><input id="documentFile" type="file" accept=".pdf,.docx,.txt,.md"></label>
         <label class="dialog-field form-full"><span>或粘贴文本</span><textarea id="documentText" rows="5" placeholder="直接粘贴法律条文、案例或内部规范"></textarea></label>
       </div>
-      <label class="dialog-check"><input type="checkbox" id="documentIndex" checked><span>上传完成后立即构建索引</span></label>
+      <label class="dialog-check"><input type="checkbox" id="documentIndex" checked><span>未自动提交时，上传后构建索引</span></label>
       <div class="dialog-error" id="documentError" hidden></div>
       <div class="dialog-foot">
         <span><i class="status-dot is-warn"></i>重复内容会自动去重</span>

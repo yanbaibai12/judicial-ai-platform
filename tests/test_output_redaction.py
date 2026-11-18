@@ -147,7 +147,8 @@ def test_healthz_and_version_have_no_config_values():
     assert healthz.json() == {"status": "ok"}
 
     version_body = version.json()
-    assert set(version_body) == {"name", "version", "environment"}
+    assert set(version_body) == {"name", "version", "environment", "demo_mode"}
+    assert version_body["demo_mode"] is False
     text = json.dumps(version_body, ensure_ascii=False).lower()
     for token in ("sqlite", "postgres", "http://", "password", "admin_token", "api_key", "secret"):
         assert token not in text, f"/version 响应泄露了配置片段：{token}"
@@ -162,7 +163,9 @@ def test_mask_secret_keeps_prefix_and_suffix_only():
 def _run_seed(*args: str) -> subprocess.CompletedProcess[str]:
     env = {
         **os.environ,
-        "PYTHONPATH": str(REPO_ROOT / "src"),
+        "PYTHONPATH": os.pathsep.join(
+            path for path in (str(REPO_ROOT / "src"), os.environ.get("PYTHONPATH", "")) if path
+        ),
         "DATABASE_URL": f"sqlite:///{tempfile.gettempdir()}/judicial-seed-test.db",
         "DATA_DIR": str(Path(tempfile.gettempdir()) / "judicial-seed-data"),
     }

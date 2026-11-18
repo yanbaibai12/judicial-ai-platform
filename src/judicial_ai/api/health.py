@@ -147,14 +147,14 @@ def readyz(response: Response):
 
 
 @router.get("/version")
-def version() -> dict[str, str]:
+def version() -> dict[str, object]:
     settings = get_settings()
     return {
         "name": settings.app_name,
         "version": settings.app_version,
         "environment": settings.app_env,
+        "demo_mode": settings.console_demo_mode,
     }
-
 
 @router.get("/metrics", include_in_schema=False)
 def prometheus_metrics() -> PlainTextResponse:
