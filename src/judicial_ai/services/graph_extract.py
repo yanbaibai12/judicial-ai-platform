@@ -10,7 +10,7 @@ _LAW = re.compile(
     r"(?:第[\d一二三四五六七八九十百千]+条)?"
 )
 _CASE = re.compile(r"[（(]\d{4}[）)][\u4e00-\u9fa5]{0,8}\d+号")
-_AMOUNT = re.compile(r"\d+(?:\.\d+)?(?:万|亿)?元")
+_AMOUNT = re.compile(r"(?<!\d)\d+(?:\.\d+)?(?:万|亿)?元")
 _DATE = re.compile(r"\d{4}年\d{1,2}月\d{1,2}日")
 _CONCEPT = re.compile(
     r"(民间借贷|高利放贷|一年期贷款市场报价利率|LPR|合同效力|诉讼时效|管辖|"
