@@ -1,9 +1,11 @@
 ﻿from __future__ import annotations
 
+import sys
 import time
 import uuid
 
 import jwt
+import pytest
 from cryptography.hazmat.primitives.asymmetric import rsa
 
 import judicial_ai.security as security
@@ -79,6 +81,27 @@ def test_worker_mode_processes_index_job(client, new_tenant_app, monkeypatch):
     job = client.get(f"/api/v1/jobs/{body['id']}", headers=new_tenant_app["headers"])
     assert job.status_code == 200
     assert job.json()["data"]["status"] == "SUCCEEDED"
+
+
+@pytest.mark.parametrize("fail", [False, True])
+def test_worker_closes_graph_on_exit(monkeypatch, fail):
+    from judicial_ai import worker
+
+    closed = []
+    monkeypatch.setattr(sys, "argv", ["worker", "--once"])
+    monkeypatch.setattr(worker, "close_graph_store", lambda: closed.append(True))
+
+    def run(**kwargs):
+        if fail:
+            raise RuntimeError("worker failure")
+
+    monkeypatch.setattr(worker, "run_worker_loop", run)
+    if fail:
+        with pytest.raises(RuntimeError, match="worker failure"):
+            worker.main()
+    else:
+        worker.main()
+    assert closed == [True]
 
 
 def test_graph_index_and_retrieval(client, new_tenant_app, monkeypatch):

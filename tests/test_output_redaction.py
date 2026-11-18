@@ -27,7 +27,7 @@ from judicial_ai.config import get_settings
 from judicial_ai.db import init_db
 from judicial_ai.errors import sanitize_exception_summary
 from judicial_ai.seed import _mask_secret
-from judicial_ai.services.graph_store import get_graph_store
+from judicial_ai.services.graph_store import close_graph_store
 from judicial_ai.services.vector_store import get_vector_store
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -104,7 +104,7 @@ def test_readyz_unavailable_backends_are_redacted(monkeypatch):
 
     # 工厂函数带 lru_cache，需先清空才能按新的 settings 重建后端实例
     get_vector_store.cache_clear()
-    get_graph_store.cache_clear()
+    close_graph_store()
     try:
         for probe in (health_api._check_vector, health_api._check_graph):
             result = probe()
@@ -115,7 +115,7 @@ def test_readyz_unavailable_backends_are_redacted(monkeypatch):
             _assert_no_leak(result)
     finally:
         get_vector_store.cache_clear()
-        get_graph_store.cache_clear()
+        close_graph_store()
 
 
 def test_readyz_payload_excludes_exception_text(monkeypatch):
