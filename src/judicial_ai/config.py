@@ -47,6 +47,11 @@ class Settings(BaseSettings):
     inference_api_key: str | None = None
     inference_timeout_seconds: float = 60.0
 
+    embedding_base_url: str | None = None
+    embedding_api_key: str | None = None
+    rerank_api_format: Literal["standard", "tei"] = "standard"
+    rerank_base_url: str | None = None
+    rerank_api_key: str | None = None
     embedding_model: str = "bge-m3"
     embedding_dim: int = 1024
 

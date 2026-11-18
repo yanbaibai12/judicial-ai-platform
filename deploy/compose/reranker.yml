@@ -1,0 +1,26 @@
+services:
+  reranker:
+    image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.9
+    command:
+      - "--model-id"
+      - "/model"
+      - "--port"
+      - "80"
+      - "--auto-truncate"
+      - "--max-batch-tokens"
+      - "512"
+      - "--max-batch-requests"
+      - "1"
+      - "--max-client-batch-size"
+      - "64"
+      - "--max-concurrent-requests"
+      - "64"
+      - "--tokenization-workers"
+      - "2"
+    ports:
+      - "127.0.0.1:18080:80"
+    volumes:
+      - ../../models/bge-reranker-v2-m3:/model:ro
+    mem_limit: 5g
+    cpus: 4
+    restart: "no"
