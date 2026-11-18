@@ -68,6 +68,51 @@ def test_rerank_threshold_filters_unrelated_and_missing_scores(client, new_tenan
     assert client.post("/v1/retrieve", json=query, headers=headers).status_code == 503
 
 
+@pytest.mark.parametrize(
+    ("best_score", "worst_score", "threshold"),
+    [(0.8, 0.2, 0.5), (-1.0, -5.0, -2.0), (1e308, -1e308, 0.0)],
+)
+def test_rerank_scores_keep_their_order(
+    client, new_tenant_app, monkeypatch, best_score, worst_score, threshold
+):
+    headers = new_tenant_app["headers"]
+    kb_id = _create_kb(client, headers)
+    for title in ("best", "worst", "missing"):
+        response = client.post(
+            f"/api/v1/kbs/{kb_id}/documents",
+            json={"title": title, "text": f"司法证据 {title}"},
+            headers=headers,
+        )
+        assert response.status_code == 201, response.text
+
+    def rerank(_model, _query, documents):
+        return [
+            {"index": index, "relevance_score": best_score if "best" in text else worst_score}
+            for index, text in enumerate(documents)
+            if "missing" not in text
+        ]
+
+    monkeypatch.setattr(retrieval_service.get_inference_client(), "rerank", rerank)
+    response = client.post(
+        "/v1/retrieve",
+        json={"kb_ids": [kb_id], "query": "司法证据", "top_k": 3},
+        headers=headers,
+    )
+    assert response.status_code == 200, response.text
+    assert len(response.json()["results"]) == 3
+    assert "best" in response.json()["results"][0]["text"]
+
+    monkeypatch.setattr(get_settings(), "rag_min_rerank_score", threshold)
+    response = client.post(
+        "/v1/retrieve",
+        json={"kb_ids": [kb_id], "query": "司法证据", "top_k": 3},
+        headers=headers,
+    )
+    assert response.status_code == 200, response.text
+    assert len(response.json()["results"]) == 1
+    assert "best" in response.json()["results"][0]["text"]
+
+
 def test_empty_milvus_results_do_not_use_sql_fallback(client, new_tenant_app, monkeypatch):
     headers = new_tenant_app["headers"]
     kb_id = _create_kb(client, headers)

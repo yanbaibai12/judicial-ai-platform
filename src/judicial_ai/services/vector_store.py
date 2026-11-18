@@ -282,7 +282,9 @@ class MilvusVectorStore(VectorStore):
                     )
                     hits = self._parse_hits(results, "hybrid")
                 except Exception as exc:  # noqa: BLE001
-                    logger.warning("milvus_hybrid_failed", extra={"error": str(exc)[:240]})
+                    logger.warning(
+                        "milvus_hybrid_failed", extra={"error": sanitize_exception_summary(exc)}
+                    )
             if not hits:
                 results = self._client.search(
                     collection_name=name,
@@ -308,7 +310,7 @@ class MilvusVectorStore(VectorStore):
                 filter=f"index_version_id == {int(index_version_id)}",
             )
         except Exception as exc:  # noqa: BLE001
-            logger.warning("milvus_delete_failed", extra={"error": str(exc)[:240]})
+            logger.warning("milvus_delete_failed", extra={"error": sanitize_exception_summary(exc)})
             raise
 
     def list_index_ids(self) -> set[int]:

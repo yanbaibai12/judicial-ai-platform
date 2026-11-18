@@ -75,9 +75,10 @@ def cleanup_index_artifacts(
             store.delete_index(index_version_id)
             results[name] = "deleted"
         except Exception as exc:  # noqa: BLE001
-            message = f"{name}: {str(exc)[:240]}"
+            error = sanitize_exception_summary(exc)
+            message = f"{name}: {error}"
             errors.append(message)
-            results[name] = {"status": "error", "error": str(exc)[:240]}
+            results[name] = {"status": "error", "error": error}
     return {"status": "FAILED" if errors else "COMPLETED", "stores": results, "errors": errors}
 
 
@@ -517,10 +518,10 @@ def index_kb(db: Session, kb: KnowledgeBase, version: str | None = None) -> Inde
             index_version.milvus_collection = str(vector_info["collection"])
     except Exception as exc:  # noqa: BLE001 - optional vector backend can degrade to SQL
         if settings.vector_backend != "sql" and not settings.vector_fallback_sql:
-            _fail_index(db, index_version, stats, str(exc), cleanup=True)
+            _fail_index(db, index_version, stats, sanitize_exception_summary(exc), cleanup=True)
             raise
         cleanup_result = cleanup_index_artifacts(index_version.id, ("vector",))
-        logger.warning("vector_index_degraded", extra={"error": str(exc)[:240]})
+        logger.warning("vector_index_degraded", extra={"error": sanitize_exception_summary(exc)})
         stats["vector"] = {
             "backend": settings.vector_backend,
             "degraded": True,
@@ -536,7 +537,7 @@ def index_kb(db: Session, kb: KnowledgeBase, version: str | None = None) -> Inde
             index_version.neo4j_snapshot = f"{settings.graph_backend}:{index_version.id}"
         except Exception as exc:  # noqa: BLE001 - graph is optional
             cleanup_result = cleanup_index_artifacts(index_version.id, ("graph",))
-            logger.warning("graph_index_degraded", extra={"error": str(exc)[:240]})
+            logger.warning("graph_index_degraded", extra={"error": sanitize_exception_summary(exc)})
             stats["graph"] = {
                 "backend": settings.graph_backend,
                 "degraded": True,
@@ -1054,6 +1055,7 @@ def retrieve(
     index_ids: list[int] = []
     vector_index_ids: list[int] = []
     index_models: set[str] = set()
+    index_dimensions: set[int] = set()
     degraded_vector_index = False
     for kb in kbs:
         kb_version, index_version_record = resolve_versions(db, kb, kb_version_alias, index_version)
@@ -1066,6 +1068,19 @@ def retrieve(
             # Empty indexes intentionally do not create a Milvus collection.
             if (index_version_record.stats or {}).get("chunk_count") != 0:
                 vector_index_ids.append(index_version_record.id)
+                dimension = (index_version_record.stats or {}).get("embedding_dim")
+                if isinstance(dimension, int) and not isinstance(dimension, bool) and dimension > 0:
+                    index_dimensions.add(dimension)
+                else:
+                    row = db.query(IndexChunkSnapshot.embedding).filter_by(
+                        index_version_id=index_version_record.id
+                    ).first()
+                    if row is not None:
+                        if not isinstance(row[0], list) or not row[0]:
+                            raise ApiError("DEPENDENCY_UNAVAILABLE", "索引向量无效", 503)
+                        index_dimensions.add(len(row[0]))
+                    elif (index_version_record.stats or {}).get("chunk_count"):
+                        raise ApiError("DEPENDENCY_UNAVAILABLE", "索引向量快照缺失", 503)
             index_models.add(index_version_record.embedding_model)
             vector_stats = (index_version_record.stats or {}).get("vector") or {}
             degraded_vector_index = degraded_vector_index or bool(vector_stats.get("degraded"))
@@ -1079,6 +1094,8 @@ def retrieve(
     query_embeddings = get_inference_client().embed(embedding_model, [query])
     _validate_embeddings([query], query_embeddings)
     query_embedding = query_embeddings[0]
+    if any(dimension != len(query_embedding) for dimension in index_dimensions):
+        raise ApiError("UPSTREAM_UNAVAILABLE", "查询向量维度与索引不一致", 503)
     scored: list[dict[str, Any]] = []
     recall_mode = "sql-hybrid"
     if degraded_vector_index and settings.vector_backend == "milvus":
@@ -1148,9 +1165,11 @@ def retrieve(
                     "DEPENDENCY_UNAVAILABLE",
                     "向量检索服务不可用",
                     503,
-                    {"dependency": "milvus", "error": str(exc)[:240]},
+                    {"dependency": "milvus", "error": sanitize_exception_summary(exc)},
                 ) from exc
-            logger.warning("vector_search_degraded", extra={"error": str(exc)[:240]})
+            logger.warning(
+                "vector_search_degraded", extra={"error": sanitize_exception_summary(exc)}
+            )
             recall_mode = "sql-fallback"
             use_sql = True
 
@@ -1173,6 +1192,8 @@ def retrieve(
         )
         chunks_with_embeddings = chunk_query.all() if index_ids else []
         for live_chunk, embedding, snapshot in chunks_with_embeddings:
+            if not isinstance(embedding, list) or len(embedding) != len(query_embedding):
+                raise ApiError("DEPENDENCY_UNAVAILABLE", "索引向量维度与查询不一致", 503)
             chunk = ChunkMeta(**snapshot.payload) if snapshot else live_chunk
             if not _match_filters(chunk, filters):
                 continue
@@ -1276,11 +1297,19 @@ def retrieve(
         return empty_response
 
     max_rrf = max((item["rrf"] for item in candidates), default=1.0) or 1.0
-    max_rerank = max(rerank_scores.values(), default=1.0) or 1.0
+    min_rerank = min(0.0, *rerank_scores.values()) if rerank_scores else 0.0
+    max_rerank = max(0.0, *rerank_scores.values()) if rerank_scores else 0.0
+    rerank_scale = max(abs(min_rerank), abs(max_rerank)) or 1.0
+    rerank_floor = min_rerank / rerank_scale
+    rerank_range = max_rerank / rerank_scale - rerank_floor or 1.0
     for item in candidates:
-        rerank_score = rerank_scores.get(item["chunk"].chunk_id, 0.0)
-        item["final_score"] = 0.6 * (item["rrf"] / max_rrf) + 0.4 * (rerank_score / max_rerank)
-        item["rerank_score"] = rerank_score
+        chunk_id = item["chunk"].chunk_id
+        rerank_score = rerank_scores.get(chunk_id, min_rerank)
+        item["final_score"] = (
+            0.6 * (item["rrf"] / max_rrf)
+            + 0.4 * ((rerank_score / rerank_scale - rerank_floor) / rerank_range)
+        )
+        item["rerank_score"] = rerank_scores.get(chunk_id, 0.0)
     ranked = sorted(candidates, key=lambda item: item["final_score"], reverse=True)[:top_k]
 
     ranked_document_ids = {item["chunk"].document_id for item in ranked}

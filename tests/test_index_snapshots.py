@@ -76,6 +76,44 @@ def test_snapshot_rollback_and_explicit_index(client, new_tenant_app):
     assert response.status_code == 404
 
 
+@pytest.mark.parametrize("backend", ["sql", "milvus"])
+@pytest.mark.parametrize("legacy", [False, True])
+def test_retrieval_rejects_embedding_dimension_mismatch(
+    client, new_tenant_app, monkeypatch, backend, legacy
+):
+    headers = new_tenant_app["headers"]
+    kb_id = _create_kb(client, headers)
+    _add_document(client, headers, kb_id, "dimension")
+    if legacy:
+        with SessionLocal() as db:
+            index = db.query(IndexVersion).filter_by(kb_id=kb_id, status="READY").first()
+            index.stats = {
+                key: value for key, value in index.stats.items() if key != "embedding_dim"
+            }
+            db.commit()
+    monkeypatch.setattr(get_settings(), "vector_backend", backend)
+    monkeypatch.setattr(retrieval.get_inference_client(), "embed", lambda *args: [[1.0, 2.0]])
+    response = client.post(
+        "/v1/retrieve", json={"kb_ids": [kb_id], "query": "dimension"}, headers=headers
+    )
+    assert response.status_code == 503
+
+
+def test_legacy_index_without_snapshot_is_rejected(client, new_tenant_app):
+    headers = new_tenant_app["headers"]
+    kb_id = _create_kb(client, headers)
+    _add_document(client, headers, kb_id, "missing-snapshot")
+    with SessionLocal() as db:
+        index = db.query(IndexVersion).filter_by(kb_id=kb_id, status="READY").first()
+        index.stats = {key: value for key, value in index.stats.items() if key != "embedding_dim"}
+        db.query(IndexChunkSnapshot).filter_by(index_version_id=index.id).delete()
+        db.commit()
+    response = client.post(
+        "/v1/retrieve", json={"kb_ids": [kb_id], "query": "document"}, headers=headers
+    )
+    assert response.status_code == 503
+
+
 def test_failed_vector_build_preserves_previous_snapshot(client, new_tenant_app, monkeypatch):
     headers = new_tenant_app["headers"]
     kb_id = _create_kb(client, headers)
@@ -101,10 +139,54 @@ def test_failed_vector_build_preserves_previous_snapshot(client, new_tenant_app,
         assert chunk.embedding == previous_embedding
         assert db.query(IndexChunkSnapshot).filter_by(index_version_id=previous_id).count() == 1
         failed = db.query(IndexVersion).filter_by(kb_id=kb_id, status="FAILED").one()
+        assert failed.stats["error"] == "RuntimeError"
         assert db.query(IndexChunkSnapshot).filter_by(index_version_id=failed.id).count() == 0
         monkeypatch.setattr(get_settings(), "vector_backend", "sql")
         result = retrieval.retrieve(db, kb.tenant_id, [kb.id], "first")
         assert {item["chunk_id"] for item in result["results"]} == {chunk.chunk_id}
+
+
+def test_vector_errors_do_not_expose_exception_details(client, new_tenant_app, monkeypatch):
+    headers = new_tenant_app["headers"]
+    kb_id = _create_kb(client, headers)
+    _add_document(client, headers, kb_id, "redaction")
+
+    class BrokenVectorStore:
+        def search(self, **kwargs):
+            raise RuntimeError("secret connection string")
+
+        def delete_index(self, index_version_id):
+            raise RuntimeError("secret connection string")
+
+    monkeypatch.setattr(retrieval, "get_vector_store", lambda: BrokenVectorStore())
+    monkeypatch.setattr(get_settings(), "vector_backend", "milvus")
+    monkeypatch.setattr(get_settings(), "vector_fallback_sql", False)
+    response = client.post(
+        "/v1/retrieve", json={"kb_ids": [kb_id], "query": "redaction"}, headers=headers
+    )
+    assert response.status_code == 503
+    assert response.json()["error"]["details"]["error"] == "RuntimeError"
+    assert "secret connection string" not in response.text
+    cleanup = retrieval.cleanup_index_artifacts(123, ("vector",))
+    assert cleanup["stores"]["vector"]["error"] == "RuntimeError"
+    assert "secret connection string" not in str(cleanup)
+
+
+def test_milvus_delete_log_redacts_exception(caplog):
+    class BrokenClient:
+        def has_collection(self, **kwargs):
+            return True
+
+        def delete(self, **kwargs):
+            raise RuntimeError("secret connection string")
+
+    store = MilvusVectorStore.__new__(MilvusVectorStore)
+    store._settings = SimpleNamespace(milvus_collection_prefix="test")
+    store._client = BrokenClient()
+    with pytest.raises(RuntimeError):
+        store.delete_index(123)
+    record = next(record for record in caplog.records if record.message == "milvus_delete_failed")
+    assert record.error == "RuntimeError"
 
 
 def test_milvus_candidates_must_belong_to_selected_snapshot(client, new_tenant_app, monkeypatch):
