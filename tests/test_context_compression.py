@@ -119,6 +119,11 @@ def test_citation_status_separates_degraded_from_invalid() -> None:
     )
     assert citation_status_for(verified["text"], "chk_1", invalid_citation) == CITATION_INVALID
     assert citation_status_for(verified["text"], "chk_1", None) == CITATION_NONE
+    for snippet in (None, "", "  ", 42, LEGAL_TEXT[:80] + "不属于原文"):
+        assert citation_status_for(
+            verified["text"], "chk_1", {"chunk_id": "chk_1", "snippet": snippet}
+        ) == CITATION_DEGRADED
+    assert citation_status_for(verified["text"], None, {"chunk_id": None}) == CITATION_INVALID
 
 
 def test_compress_results_reports_three_state_counts() -> None:

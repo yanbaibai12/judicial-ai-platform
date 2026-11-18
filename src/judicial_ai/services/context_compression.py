@@ -17,8 +17,8 @@ _ASCII_RE = re.compile(r"[A-Za-z0-9_]{2,}")
 _PROTECTED_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"第[一二三四五六七八九十百千零〇0-9]{1,10}条"),
     re.compile(r"《[^》]{1,80}》"),
-    re.compile(r"(?:人民币)?\d[\d,]*(?:\.\d+)?(?:元|万元|亿元|%|‰|个月|年)"),
-    re.compile(r"[0-9一二三四五六七八九十百千万]+(?:倍|个月)"),
+    re.compile(r"(?:人民币)?(?<![\d,])\d[\d,]*(?:\.\d+)?(?:元|万元|亿元|%|‰|个月|年)"),
+    re.compile(r"(?<![0-9一二三四五六七八九十百千万])[0-9一二三四五六七八九十百千万]+(?:倍|个月)"),
     re.compile(r"\d{4}年\d{1,2}月\d{1,2}日"),
     re.compile(r"[（(]\d{4}[）)]\S{0,12}\d{1,6}号"),
     re.compile(r"案号|民初|民终|刑初|刑终|行初|再审"),
@@ -257,13 +257,11 @@ def citation_status_for(
 
     if not isinstance(citation, dict):
         return CITATION_NONE
-    if citation.get("chunk_id") != chunk_id:
+    if not chunk_id or citation.get("chunk_id") != chunk_id:
         return CITATION_INVALID
     snippet = citation.get("snippet")
-    if isinstance(snippet, str):
-        anchor = snippet[:80].strip()
-        if anchor and anchor not in original_text:
-            return CITATION_DEGRADED
+    if not isinstance(snippet, str) or not snippet.strip() or snippet not in original_text:
+        return CITATION_DEGRADED
     return CITATION_VERIFIED
 
 

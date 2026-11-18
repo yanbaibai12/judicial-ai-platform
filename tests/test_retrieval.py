@@ -2,9 +2,19 @@ from __future__ import annotations
 
 import uuid
 
-from judicial_ai.config import get_settings
+import pytest
+from pydantic import ValidationError
+
+from judicial_ai.config import Settings, get_settings
 from judicial_ai.services import retrieval as retrieval_service
 from judicial_ai.text_utils import normalize_text
+
+
+@pytest.mark.parametrize("value", ["nan", "inf", "-inf"])
+def test_rerank_threshold_must_be_finite(monkeypatch, value: str) -> None:
+    monkeypatch.setenv("RAG_MIN_RERANK_SCORE", value)
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None)
 
 
 def _create_kb(client, headers) -> int:
@@ -21,6 +31,41 @@ def _create_kb(client, headers) -> int:
     )
     assert response.status_code == 201, response.text
     return response.json()["data"]["id"]
+
+
+def test_rerank_threshold_filters_unrelated_and_missing_scores(client, new_tenant_app, monkeypatch):
+    headers = new_tenant_app["headers"]
+    kb_id = _create_kb(client, headers)
+    response = client.post(
+        f"/api/v1/kbs/{kb_id}/documents",
+        json={"title": "test", "text": "民间借贷利率有相关规定"},
+        headers=headers,
+    )
+    assert response.status_code == 201
+    settings = get_settings()
+    monkeypatch.setattr(settings, "rag_min_rerank_score", 0.5)
+    inference = retrieval_service.get_inference_client()
+    query = {"kb_ids": [kb_id], "query": "民间借贷", "compress": True}
+
+    for results, expected in [
+        ([{"index": 0, "relevance_score": 0.8}], 1),
+        ([{"index": 0, "relevance_score": 0.01}], 0),
+        ([], 0),
+    ]:
+        monkeypatch.setattr(inference, "rerank", lambda *args, result=results: result)
+        response = client.post("/v1/retrieve", json=query, headers=headers)
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert len(body["results"]) == expected
+        if not expected:
+            assert body["citation"]["status"] == "NONE"
+            assert body["compression"]["reason"] == "no_results"
+            assert body["usage"]["filtered_low_relevance"] == 1
+
+    monkeypatch.setattr(
+        inference, "rerank", lambda *args: [{"index": 0, "relevance_score": float("nan")}]
+    )
+    assert client.post("/v1/retrieve", json=query, headers=headers).status_code == 503
 
 
 def test_empty_milvus_results_do_not_use_sql_fallback(client, new_tenant_app, monkeypatch):

@@ -1,6 +1,7 @@
 ﻿from functools import lru_cache
 from typing import Literal
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -143,6 +144,8 @@ class Settings(BaseSettings):
     # embedding 与 rerank 后必须用评测集重新标定，不能用默认值当承诺。
     rag_min_dense_score: float = 0.0
     rag_min_keyword_score: float = 0.0
+    # 原始重排分数与模型相关；None 表示关闭，启用前须用独立评测集校准。
+    rag_min_rerank_score: float | None = Field(default=None, allow_inf_nan=False)
 
     decision_provider: Literal["rule", "jev"] = "rule"
     decision_shadow_enabled: bool = False

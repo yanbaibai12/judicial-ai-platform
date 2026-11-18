@@ -1,6 +1,7 @@
 ﻿from __future__ import annotations
 
 import logging
+import math
 import mimetypes
 import time
 from typing import Any
@@ -1211,7 +1212,37 @@ def retrieve(
         settings.rag_min_keyword_score,
     )
 
-    if not scored:
+    recall_ms = int((time.perf_counter() - recall_started) * 1000)
+    rerank_started = time.perf_counter()
+    candidates = sorted(scored, key=lambda item: item["rrf"], reverse=True)[:50]
+    rerank_scores: dict[str, float] = {}
+    if candidates:
+        rerank_results = get_inference_client().rerank(
+            settings.rag_rerank_model, query, [item["chunk"].text for item in candidates]
+        )
+        for result in rerank_results:
+            index = result.get("index")
+            score = result.get("relevance_score")
+            if (
+                isinstance(index, bool) or not isinstance(index, int)
+                or not 0 <= index < len(candidates)
+                or isinstance(score, bool) or not isinstance(score, (int, float))
+                or not math.isfinite(score)
+                or candidates[index]["chunk"].chunk_id in rerank_scores
+            ):
+                raise ApiError("UPSTREAM_UNAVAILABLE", "重排服务返回无效结果", 503)
+            rerank_scores[candidates[index]["chunk"].chunk_id] = float(score)
+    if settings.rag_min_rerank_score is not None:
+        before_filter = len(candidates)
+        candidates = [
+            item for item in candidates
+            if item["chunk"].chunk_id in rerank_scores
+            and rerank_scores[item["chunk"].chunk_id] >= settings.rag_min_rerank_score
+        ]
+        filtered_low_relevance += before_filter - len(candidates)
+    rerank_ms = int((time.perf_counter() - rerank_started) * 1000)
+
+    if not candidates:
         empty_response: dict[str, Any] = {
             "query": query,
             "results": [],
@@ -1227,6 +1258,8 @@ def retrieve(
             "versions": version_info,
             "usage": {
                 "total_ms": int((time.perf_counter() - started) * 1000),
+                "recall_ms": recall_ms,
+                "rerank_ms": rerank_ms,
                 "recall_mode": recall_mode,
                 "filtered_low_relevance": filtered_low_relevance,
             },
@@ -1242,18 +1275,6 @@ def retrieve(
             empty_response["compression"] = {"enabled": False, "reason": "no_results"}
         return empty_response
 
-    recall_ms = int((time.perf_counter() - recall_started) * 1000)
-    rerank_started = time.perf_counter()
-    candidates = sorted(scored, key=lambda item: item["rrf"], reverse=True)[:50]
-    rerank_model = settings.rag_rerank_model
-    rerank_results = get_inference_client().rerank(
-        rerank_model, query, [item["chunk"].text for item in candidates]
-    )
-    rerank_scores = {
-        candidates[result["index"]]["chunk"].chunk_id: float(result.get("relevance_score", 0.0))
-        for result in rerank_results
-        if 0 <= int(result.get("index", -1)) < len(candidates)
-    }
     max_rrf = max((item["rrf"] for item in candidates), default=1.0) or 1.0
     max_rerank = max(rerank_scores.values(), default=1.0) or 1.0
     for item in candidates:
@@ -1261,7 +1282,6 @@ def retrieve(
         item["final_score"] = 0.6 * (item["rrf"] / max_rrf) + 0.4 * (rerank_score / max_rerank)
         item["rerank_score"] = rerank_score
     ranked = sorted(candidates, key=lambda item: item["final_score"], reverse=True)[:top_k]
-    rerank_ms = int((time.perf_counter() - rerank_started) * 1000)
 
     ranked_document_ids = {item["chunk"].document_id for item in ranked}
     documents = (
