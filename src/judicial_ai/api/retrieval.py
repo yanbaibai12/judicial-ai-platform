@@ -970,6 +970,23 @@ def retrieve_api(
     if isinstance(result.get("compression"), dict):
         event_payload["compression"] = result["compression"]
     try:
+        version_refs = []
+        for kb_id, versions in (result.get("versions") or {}).items():
+            index_name = versions.get("index")
+            if not index_name:
+                continue
+            index = (
+                db.query(IndexVersion)
+                .filter(IndexVersion.kb_id == int(kb_id), IndexVersion.version == index_name)
+                .first()
+            )
+            if index is not None:
+                version_refs.append({
+                    "kb_id": int(kb_id),
+                    "index_id": int(index.id),
+                    "kb_version_id": int(index.kb_version_id),
+                })
+        event_payload["version_refs"] = version_refs
         record_event(
             db,
             "RETRIEVAL_COMPLETED",

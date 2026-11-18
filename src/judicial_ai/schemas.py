@@ -310,6 +310,11 @@ class DatasetExportRequest(APIModel):
     approved_by: str | None = None
 
 
+class DatasetItemExclusion(APIModel):
+    item_ids: list[int] = Field(min_length=1, max_length=100)
+    reason: str = Field(min_length=1, max_length=512)
+
+
 class AnnotationTaskCreate(APIModel):
     name: str = Field(min_length=1, max_length=128)
     task_type: Literal[
