@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+from types import SimpleNamespace
 
 import pytest
 
@@ -114,6 +115,32 @@ def test_kb_acl_covers_document_search_and_grant_management(
 def test_invalid_embeddings_are_rejected(embeddings):
     with pytest.raises(ApiError):
         _validate_embeddings(["a", "b"], embeddings)
+
+
+@pytest.mark.parametrize(
+    ("label", "gate"),
+    [
+        ({"expect_empty": True}, "recall_at_k"),
+        ({"relevant_chunk_ids": ["chunk"]}, "empty_accuracy"),
+    ],
+)
+def test_retrieval_gate_requires_matching_samples(monkeypatch, label, gate):
+    monkeypatch.setattr(
+        "judicial_ai.services.governance.get_kb", lambda *args: SimpleNamespace(id=1)
+    )
+    monkeypatch.setattr("judicial_ai.services.governance.assert_access", lambda *args: None)
+    monkeypatch.setattr(
+        "judicial_ai.services.governance.retrieve",
+        lambda *args, **kwargs: {"results": [], "versions": {}},
+    )
+    item = SimpleNamespace(
+        input={"query": "q", "kb_ids": [1]}, label=label, output={}, item_type="test"
+    )
+    result = _run_retrieval_eval(
+        None, SimpleNamespace(tenant_id=1), [item], {"gates": {gate: 0}}, None
+    )
+    assert result["gates"][gate] is False
+    assert result["gate_passed"] is False
 
 
 def test_partial_embeddings_do_not_commit_document(client, new_tenant_app, monkeypatch):

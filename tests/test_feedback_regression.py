@@ -288,6 +288,13 @@ def test_explicit_empty_retrieval_is_evaluated_separately(client, regression_cas
     metrics = response.json()["data"]["metrics"]
     assert metrics["empty_accuracy"] == 1
     assert metrics["gate_passed"] is True
+    assert metrics["relevant_samples"] == 0
+
+    payload["config"]["gates"] = {"recall_at_k": 0.5}
+    response = client.post("/api/v1/evals", json=payload, headers=case["owner"])
+    metrics = response.json()["data"]["metrics"]
+    assert metrics["gates"]["recall_at_k"] is False
+    assert metrics["gate_passed"] is False
 
 
 def test_bad_case_can_create_reviewable_retrieval_samples(client, regression_case):

@@ -18,7 +18,7 @@ from ..acl import accessible_document_ids, assert_access
 from ..config import get_settings
 from ..context import current_request_context
 from ..db import SessionLocal
-from ..errors import ApiError
+from ..errors import ApiError, sanitize_exception_summary
 from ..metrics import record_job_duration, record_job_event
 from ..models import App, AppCredential, EvalTask, Job, KnowledgeBase, Tenant, utcnow
 from ..security import Principal
@@ -318,8 +318,11 @@ def _execute_running(db: Session, job: Job, *, from_worker: bool = False) -> Job
                     heartbeat_db.commit()
                     if not changed:
                         return
-                except Exception:
-                    logger.exception("job_heartbeat_failed", extra={"job_id": job_id})
+                except Exception as exc:
+                    logger.error(
+                        "job_heartbeat_failed",
+                        extra={"job_id": job_id, "error": sanitize_exception_summary(exc)},
+                    )
 
     thread = threading.Thread(target=heartbeat, daemon=True)
     thread.start()
@@ -361,7 +364,8 @@ def _execute_running(db: Session, job: Job, *, from_worker: bool = False) -> Job
         db.refresh(job)
         if job.status != "RUNNING" or job.attempts != attempt:
             return job
-        values: dict[str, Any] = {"error": str(exc)[:2000]}
+        error = str(exc)[:1000] if isinstance(exc, ApiError) else sanitize_exception_summary(exc)
+        values: dict[str, Any] = {"error": error}
         auth_failure = isinstance(exc, ApiError) and exc.status_code in {401, 403}
         permanent_failure = auth_failure or (
             isinstance(exc, ApiError) and exc.code == "EVAL_FAILED"
@@ -389,7 +393,7 @@ def _execute_running(db: Session, job: Job, *, from_worker: bool = False) -> Job
                 EvalTask.tenant_id == job.tenant_id,
                 EvalTask.status == "PENDING",
             ).update(
-                {"status": "FAILED", "error": str(exc)[:1000], "finished_at": utcnow()},
+                {"status": "FAILED", "error": error, "finished_at": utcnow()},
                 synchronize_session=False,
             )
         db.commit()
@@ -398,9 +402,12 @@ def _execute_running(db: Session, job: Job, *, from_worker: bool = False) -> Job
             return job
         record_job_event(job.job_type, job.status)
         record_job_duration(job.job_type, time.perf_counter() - started)
-        logger.exception(
+        logger.error(
             "job_failed",
-            extra={"job_id": job.id, "job_type": job.job_type, "status": job.status},
+            extra={
+                "job_id": job.id, "job_type": job.job_type, "status": job.status,
+                "error": sanitize_exception_summary(exc),
+            },
         )
     finally:
         stop.set()

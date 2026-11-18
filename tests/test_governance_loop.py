@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import uuid
+from datetime import UTC, datetime
 
 from .conftest import register_chat_capability
 
@@ -33,6 +34,7 @@ def _create_event_version(
     event_types: list[str] | None = None,
     filter_config: dict | None = None,
     publish: bool = False,
+    from_time: str = "2000-01-01T00:00:00",
 ) -> dict:
     response = client.post(
         f"/api/v1/datasets/{dataset_id}/versions",
@@ -40,7 +42,7 @@ def _create_event_version(
             "version": "v1.0.0",
             "source_snapshot": {
                 "event_types": event_types or ["INFERENCE_COMPLETED"],
-                "from": "2000-01-01T00:00:00",
+                "from": from_time,
             },
             "filter_config": filter_config or {"redact": True, "dedup": True},
             "split": {"train": 1.0, "validation": 0.0, "test": 0.0},
@@ -60,6 +62,30 @@ def _invoke_chat(client, headers, code: str, content: str) -> str:
     )
     assert response.status_code == 200, response.text
     return response.json()["request_id"]
+
+
+def test_eval_failure_does_not_expose_exception_details(client, demo_headers, monkeypatch):
+    _invoke_chat(client, demo_headers, "llm.qwen3.chat", "eval failure")
+    dataset_id = _create_dataset(client, demo_headers, "EVAL")
+    version = _create_event_version(client, demo_headers, dataset_id)
+
+    def fail(*args):
+        raise RuntimeError("secret connection string")
+
+    monkeypatch.setattr("judicial_ai.services.governance._run_text_eval", fail)
+    response = client.post(
+        "/api/v1/evals",
+        json={
+            "dataset_version_id": version["id"],
+            "target_type": "MODEL",
+            "target_version": "test",
+        },
+        headers=demo_headers,
+    )
+    assert response.status_code == 201
+    assert response.json()["data"]["status"] == "FAILED"
+    assert response.json()["data"]["metrics"]["error"] == "RuntimeError"
+    assert "secret connection string" not in response.text
 
 
 def test_event_redaction_dataset_lineage_and_export(client, admin_headers, new_tenant_app):
@@ -229,6 +255,7 @@ def test_text_and_retrieval_eval(client, admin_headers, seeded, demo_headers):
     assert response.status_code == 200
     assert response.json()["data"]["results"]
 
+    retrieval_start = datetime.now(UTC).isoformat()
     result = client.post(
         "/v1/retrieve",
         json={"kb_ids": [seeded["kb_id"]], "query": "民间借贷利率四倍", "top_k": 3},
@@ -270,6 +297,7 @@ def test_text_and_retrieval_eval(client, admin_headers, seeded, demo_headers):
         demo_headers,
         retrieval_dataset_id,
         event_types=["RETRIEVAL_COMPLETED"],
+        from_time=retrieval_start,
     )
     response = client.post(
         "/api/v1/evals",

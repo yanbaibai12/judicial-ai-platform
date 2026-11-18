@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 
 from ..acl import accessible_document_ids, assert_access
 from ..config import get_settings
-from ..errors import ApiError
+from ..errors import ApiError, sanitize_exception_summary
 from ..ids import new_id
 from ..models import (
     AiEvent,
@@ -1818,10 +1818,11 @@ def _run_eval_task(
         )
         return results
     except Exception as exc:  # noqa: BLE001 - 评测失败需落库并保留现场
+        error = str(exc)[:1000] if isinstance(exc, ApiError) else sanitize_exception_summary(exc)
         task.status = "FAILED"
-        task.error = str(exc)[:1000]
+        task.error = error
         task.finished_at = utcnow()
-        task.metrics = {"error": str(exc)[:1000]}
+        task.metrics = {"error": error}
         return []
 
 
@@ -1885,11 +1886,14 @@ def _run_retrieval_eval(
             for name, value in metrics.items():
                 aggregates.setdefault(name, []).append(float(value))
         samples += 1
-    result: dict[str, Any] = {"samples": samples}
+    result: dict[str, Any] = {
+        "samples": samples,
+        "relevant_samples": len(aggregates["recall_at_k"]),
+        "empty_samples": len(empty_results),
+    }
     if evaluated_versions:
         result["evaluated_versions"] = evaluated_versions
     if empty_results:
-        result["empty_samples"] = len(empty_results)
         result["empty_accuracy"] = round(sum(empty_results) / len(empty_results), 6)
     if samples == 0:
         raise ApiError("JOB_STATE_INVALID", "没有可执行的检索评测样本", 409)
@@ -1897,7 +1901,10 @@ def _run_retrieval_eval(
         result[name] = round(sum(values) / len(values), 6) if values else 0.0
     gates = config.get("gates") or {}
     gate_results = {
-        name: result.get(name, 0.0) >= float(threshold)
+        name: (
+            bool(empty_results if name == "empty_accuracy" else aggregates.get(name))
+            and result.get(name, 0.0) >= float(threshold)
+        )
         for name, threshold in gates.items()
     }
     if gate_results:
