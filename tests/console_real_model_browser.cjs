@@ -5,6 +5,7 @@ const crypto = require("node:crypto");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
+const waitJob = require("./console_acceptance_job.cjs");
 
 const base = process.env.JAI_CONSOLE_TEST_URL;
 const admin = process.env.JAI_CONSOLE_ADMIN_TOKEN;
@@ -14,7 +15,7 @@ if (process.env.JAI_CONSOLE_TEST_ISOLATED !== "1" || !admin ||
 }
 const source = "https://www.court.gov.cn/fabu/xiangqing/508001.html";
 const expectedHash = "82220337e5235b49c11078498ec4ac8ab009e1b23607944b8330b42f5ae20345";
-const objectPath = path.join("data", "public-console-aeb40f70", "objects",
+const objectPath = process.env.JAI_COURT_SNAPSHOT || path.join("data", "public-console-aeb40f70", "objects",
   "tenant-381022968706433024/kb-381022972003155968/document-381022978672099328/" +
   "version-381022978672099329", expectedHash);
 const text = fs.readFileSync(objectPath, "utf8");
@@ -83,8 +84,12 @@ async function main() {
           ...(body === undefined ? {} : {body: JSON.stringify(body)})
         });
         const raw = await response.text();
-        if (response.status !== expected) throw new Error(method + " " + url + ": " + response.status + " " + raw.slice(0, 500));
+        if (!(Array.isArray(expected) ? expected : [expected]).includes(response.status))
+          throw new Error(method + " " + url + ": " + response.status + " " + raw.slice(0, 500));
         return this.parse(raw);
+      },
+      async waitJob(id, token) {
+        return (${waitJob.toString()})(this.call.bind(this), id, token);
       }
     }`);
     const setup = await evaluate(`(async () => {
@@ -129,8 +134,7 @@ async function main() {
     assert.ok(doc.index_job_id, "automatic indexing was not submitted");
     const index = await evaluate(`(async () => {
       const a = window.acceptance;
-      const job = (await a.call("GET", "/api/v1/jobs/${doc.index_job_id}", undefined, a.token)).data;
-      if (job.status !== "SUCCEEDED") throw new Error("index job: " + JSON.stringify(job));
+      const job = await a.waitJob(${JSON.stringify(doc.index_job_id)}, a.token);
       const idx = job.result.index;
       if (idx.status !== "PENDING_APPROVAL") throw new Error("index approval was not required");
       await a.call("POST", "/api/v1/kbs/" + a.kb + "/indexes/" + idx.id + "/approve",
@@ -206,10 +210,14 @@ async function main() {
         label: {relevant_chunk_ids: [hit.chunk_id]}
       }, a.token, 201);
       await a.call("POST", "/api/v1/dataset-versions/" + version.id + "/publish", {}, a.token);
-      const evaluation = (await a.call("POST", "/api/v1/evals", {
+      let evaluation = (await a.call("POST", "/api/v1/evals", {
         dataset_version_id: version.id, target_type: "RETRIEVAL", target_version: "browser-real",
         config: {top_k: 3, gates: {recall_at_k: 1.0}}
-      }, a.token, 201)).data;
+      }, a.token, [201, 202])).data;
+      if (evaluation.job) {
+        await a.waitJob(evaluation.job.id, a.token);
+        evaluation = (await a.call("GET", "/api/v1/evals/" + evaluation.id, undefined, a.token)).data;
+      }
       if (evaluation.status !== "SUCCEEDED" || !evaluation.metrics.gate_passed)
         throw new Error("evaluation did not pass: " + JSON.stringify(evaluation));
       return {request_id: retrieval.request_id, citation: retrieval.citation.status,
