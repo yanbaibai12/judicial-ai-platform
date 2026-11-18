@@ -11,6 +11,7 @@
 - 只做**可自动判定**的断言；需要法律/业务判断的部分只落证据，不冒充通过。
 - 每条步骤记录 request_id，便于与访问日志、审计表对齐。
 - 失败不中断整轮（除非依赖缺失），最终汇总为 FAIL 列表并返回非 0 退出码。
+- 存在跳过项时标记为 INCOMPLETE，返回退出码 3；FAIL 优先返回退出码 1。
 
 用法：
     python scripts/acceptance/run_staging_acceptance.py \
@@ -44,6 +45,7 @@ sys.path.insert(0, str(ROOT / "src"))
 PASS = "PASS"
 FAIL = "FAIL"
 SKIP = "SKIP"
+INCOMPLETE = "INCOMPLETE"
 
 ADMIN_PERMISSIONS = [
     "app:invoke",
@@ -82,6 +84,18 @@ class Scenario:
     @property
     def failed(self) -> list[Step]:
         return [item for item in self.steps if item.status == FAIL]
+
+    @property
+    def skipped(self) -> list[Step]:
+        return [item for item in self.steps if item.status == SKIP]
+
+    @property
+    def status(self) -> str:
+        if self.failed:
+            return FAIL
+        if not self.steps or self.skipped:
+            return INCOMPLETE
+        return PASS
 
 
 class Api:
@@ -265,7 +279,7 @@ def _invoke_matrix(api: Api, scenario: Scenario, ctx: dict[str, Any], code: str)
     )
     scenario.evidence["A01_invoke_allowed"] = {
         "status_code": allowed.status_code,
-        "body": Api.data(allowed),
+        "request_id": Api.request_id(allowed),
     }
 
     denied = api.call(
@@ -603,8 +617,8 @@ def scenario_a05(api: Api, scenario: Scenario, ctx: dict[str, Any], chat_model: 
     elif filtered == 0:
         verdict = SKIP
         note = (
-            f"未配置相关性阈值（RAG_MIN_DENSE_SCORE=0），无关查询仍返回 {len(none_hits)} 条；"
-            "需业务确认阈值后重跑"
+            f"无关查询仍返回 {len(none_hits)} 条，且未观察到低相关结果被过滤；"
+            "需检查阈值配置并经业务确认后重跑"
         )
     else:
         verdict = SKIP
@@ -633,18 +647,25 @@ def scenario_a05(api: Api, scenario: Scenario, ctx: dict[str, Any], chat_model: 
         if chat.status_code == 200:
             choices = (Api.data(chat) or {}).get("choices") or []
             if choices:
-                answer = str((choices[0].get("message") or {}).get("content") or "")
+                content = (choices[0].get("message") or {}).get("content")
+                answer = content.strip() if isinstance(content, str) else ""
         scenario.evidence["A05_chat"] = {
             "status_code": chat.status_code,
-            "answer_preview": answer[:200],
+            "answer_present": bool(answer),
         }
         scenario.add(
             "A05-07",
-            "模型回答已记录（语义正确性需人工判定）",
-            SKIP,
-            "证据已落盘，需业务/法律复核",
+            "模型回答及拒答复核",
+            SKIP if chat.status_code == 200 and answer else FAIL,
+            (
+                "仅记录回答是否存在，拒答正确性需业务/法律复核；此调用未验证检索增强"
+                if chat.status_code == 200 and answer
+                else f"模型调用失败或回答为空（HTTP {chat.status_code}）"
+            ),
             Api.request_id(chat),
         )
+    else:
+        scenario.add("A05-07", "模型回答及拒答复核", SKIP, "未配置模型，未执行回答检查")
 
 
 def probe_a08(api: Api, scenario: Scenario, ctx: dict[str, Any], expect: str) -> None:
@@ -723,7 +744,13 @@ def render_markdown(scenarios: list[Scenario], meta: dict[str, Any]) -> str:
     for scenario in scenarios:
         total = len(scenario.steps)
         failed = len(scenario.failed)
-        lines.append(f"## {scenario.name}：{'通过' if not failed else f'失败 {failed}/{total}'}")
+        skipped = len(scenario.skipped)
+        verdict = {
+            PASS: "通过",
+            FAIL: f"失败 {failed}/{total}",
+            INCOMPLETE: f"未完成（跳过 {skipped}/{total}）",
+        }[scenario.status]
+        lines.append(f"## {scenario.name}：{verdict}")
         lines.append("")
         lines.append("| 步骤 | 判定 | 说明 | request_id |")
         lines.append("|---|---|---|---|")
@@ -841,12 +868,13 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     for scenario in scenarios:
-        failed = scenario.failed
-        print(f"{scenario.name}: {'PASS' if not failed else f'FAIL({len(failed)})'}")
-        for step in failed:
+        print(f"{scenario.name}: {scenario.status}")
+        for step in scenario.failed + scenario.skipped:
             print(f"  - {step.sid} {step.title}: {step.detail}")
-        if failed:
+        if scenario.status == FAIL:
             exit_code = 1
+        elif scenario.status == INCOMPLETE and exit_code == 0:
+            exit_code = 3
     print(f"证据目录：{out_dir}")
     return exit_code
 
