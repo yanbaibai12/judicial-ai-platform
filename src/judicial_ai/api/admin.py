@@ -41,6 +41,7 @@ from ..services.capabilities import (
     check_grant,
     create_capability,
     create_version,
+    parse_retrieval_scope,
     publish_version,
     resolve_capability,
     rollback_version,
@@ -526,6 +527,11 @@ def grant_capability(
     db: Session = Depends(get_db),
 ):
     capability = _find_capability(db, code)
+    if capability.type in {"RAG_RETRIEVE", "GRAPH_RETRIEVE"}:
+        try:
+            parse_retrieval_scope(payload.data_scope)
+        except ValueError as exc:
+            raise ApiError("INVALID_ARGUMENT", str(exc), 400) from exc
     app = db.get(App, payload.app_id)
     if app is None or app.deleted_at is not None:
         raise ApiError("RESOURCE_NOT_FOUND", "应用不存在", 404)
