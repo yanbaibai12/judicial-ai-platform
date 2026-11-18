@@ -50,6 +50,51 @@ def test_inference_routes_and_credentials(monkeypatch, separate):
         assert seen[2] == ("https://chat.example/v1/rerank", "Bearer chat-key")
 
 
+@pytest.mark.parametrize(
+    ("items", "expected"),
+    [
+        ([{"index": 1, "embedding": [2]}, {"index": 0, "embedding": [1]}], [[1], [2]]),
+        ([{"embedding": [1]}, {"embedding": [2]}], [[1], [2]]),
+        ([{"index": 0, "embedding": [1]}], None),
+        ([{"index": 0, "embedding": [1]}, {"index": 0, "embedding": [2]}], None),
+        ([{"index": 0, "embedding": [1]}, {"embedding": [2]}], None),
+        ([{"index": None, "embedding": [1]}, {"index": None, "embedding": [2]}], None),
+        ([{"index": True, "embedding": [1]}, {"index": 0, "embedding": [2]}], None),
+        ([{"embedding": [1]}, {"embedding": [float("nan")]}], None),
+        ([{"embedding": [1]}, {"embedding": [float("inf")]}], None),
+        ([{"embedding": [1]}, {"embedding": [True]}], None),
+        ([{"embedding": [1]}, {"embedding": ["1"]}], None),
+        ([{"embedding": [1]}, {"embedding": [1, 2]}], None),
+        ([{"embedding": []}, {"embedding": []}], None),
+    ],
+)
+def test_embedding_response_validation(monkeypatch, items, expected):
+    from judicial_ai.errors import ApiError
+
+    settings = inference.get_settings()
+    monkeypatch.setattr(settings, "inference_mode", "proxy")
+    client_class = httpx.Client
+    import json
+
+    monkeypatch.setattr(
+        inference.httpx,
+        "Client",
+        lambda **kwargs: client_class(
+            transport=httpx.MockTransport(
+                lambda request: httpx.Response(200, content=json.dumps({"data": items}))
+            ),
+            **kwargs,
+        ),
+    )
+    client = inference.InferenceClient()
+    if expected is None:
+        with pytest.raises(ApiError) as exc:
+            client.embed("model", ["a", "b"])
+        assert exc.value.status_code == 503
+    else:
+        assert client.embed("model", ["a", "b"]) == expected
+
+
 def test_tei_rerank_format_and_response(monkeypatch):
     settings = inference.get_settings()
     monkeypatch.setattr(settings, "inference_mode", "proxy")

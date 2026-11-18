@@ -124,8 +124,31 @@ class InferenceClient:
                 self._url("embeddings", self.settings.embedding_base_url), json=payload
             )
             response.raise_for_status()
-            data = response.json()
-            return [item["embedding"] for item in data["data"]]
+            items = response.json()["data"]
+            if not isinstance(items, list) or len(items) != len(inputs):
+                raise ValueError("Invalid embedding count")
+            indices = [item.get("index") for item in items]
+            if any("index" in item for item in items):
+                if any(type(index) is not int for index in indices) or set(indices) != set(
+                    range(len(inputs))
+                ):
+                    raise ValueError("Invalid embedding indices")
+                items = sorted(items, key=lambda item: item["index"])
+            vectors = [item["embedding"] for item in items]
+            if any(
+                not isinstance(vector, list)
+                or not vector
+                or len(vector) != len(vectors[0])
+                or any(
+                    isinstance(value, bool)
+                    or not isinstance(value, (int, float))
+                    or not math.isfinite(value)
+                    for value in vector
+                )
+                for vector in vectors
+            ):
+                raise ValueError("Invalid embedding vectors")
+            return vectors
         except Exception as exc:
             self._raise_for_upstream(exc)
             raise
