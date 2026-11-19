@@ -17,6 +17,36 @@ def test_rerank_threshold_must_be_finite(monkeypatch, value: str) -> None:
         Settings(_env_file=None)
 
 
+@pytest.mark.parametrize(("top_k", "expected"), [(1, 2), (3, 3)])
+def test_rerank_candidate_limit_respects_top_k(
+    client, new_tenant_app, monkeypatch, top_k, expected
+):
+    headers = new_tenant_app["headers"]
+    kb_id = _create_kb(client, headers)
+    for index in range(4):
+        response = client.post(
+            f"/api/v1/kbs/{kb_id}/documents",
+            json={"title": str(index), "text": f"test document {index}"},
+            headers=headers,
+        )
+        assert response.status_code == 201
+    monkeypatch.setattr(get_settings(), "rag_rerank_candidates", 2)
+    seen = []
+
+    def rerank(_model, _query, documents):
+        seen.append(len(documents))
+        return [{"index": i, "relevance_score": 0.5} for i in range(len(documents))]
+
+    monkeypatch.setattr(retrieval_service.get_inference_client(), "rerank", rerank)
+    response = client.post(
+        "/v1/retrieve", json={"kb_ids": [kb_id], "query": "test", "top_k": top_k},
+        headers=headers,
+    )
+    assert response.status_code == 200
+    assert seen == [expected]
+    assert len(response.json()["results"]) == top_k
+
+
 def _create_kb(client, headers) -> int:
     response = client.post(
         "/api/v1/kbs",

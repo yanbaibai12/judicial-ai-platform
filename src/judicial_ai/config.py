@@ -161,6 +161,7 @@ class Settings(BaseSettings):
     rag_compression_enabled: bool = True
     rag_compression_max_chars: int = 8000
     rag_rerank_model: str = "bge-reranker-v2-m3"
+    rag_rerank_candidates: int = Field(default=50, ge=1, le=50)
     rag_compression_provider: Literal["extractive", "llm"] = "extractive"
     # ReFRAG 分段感知压缩：先按段落/章节边界选段，再做句子级精修
     rag_compression_segment_aware: bool = True

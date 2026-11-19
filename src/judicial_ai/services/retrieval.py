@@ -1235,7 +1235,8 @@ def retrieve(
 
     recall_ms = int((time.perf_counter() - recall_started) * 1000)
     rerank_started = time.perf_counter()
-    candidates = sorted(scored, key=lambda item: item["rrf"], reverse=True)[:50]
+    candidate_limit = max(top_k, settings.rag_rerank_candidates)
+    candidates = sorted(scored, key=lambda item: item["rrf"], reverse=True)[:candidate_limit]
     rerank_scores: dict[str, float] = {}
     if candidates:
         rerank_results = get_inference_client().rerank(
