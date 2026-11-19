@@ -224,7 +224,9 @@ async function main() {
         chunk_id: hit.chunk_id, dataset_version: version.id, metrics: evaluation.metrics};
     })()`);
     console.log("Citation snapshot, feedback and technical regression:", assessment);
-    const generation = await evaluate(`(async () => {
+    let generationError;
+    try {
+      const generation = await evaluate(`(async () => {
       const a = window.acceptance, code = "browser-chat-" + Date.now();
       await a.call("POST", "/api/v1/admin/capabilities", {
         code, name: "真实模型验收", type: "MODEL_CHAT", owner: "acceptance",
@@ -244,7 +246,11 @@ async function main() {
       if (typeof content !== "string" || !content.trim()) throw new Error("empty generation response");
       return {model: answer.model, characters: content.length};
     })()`);
-    console.log("Real chat completion received:", generation);
+      console.log("Real chat completion received:", generation);
+    } catch (error) {
+      generationError = error;
+      console.error("Real chat completion failed:", error.message);
+    }
     const probes = await evaluate(`(async () => {
       const a = window.acceptance;
       const cases = [
@@ -271,6 +277,7 @@ async function main() {
     await waitFor("!document.querySelector('#runRetrieval').disabled", 180);
     assert.match(await evaluate("document.querySelector('#retrievalResults').textContent"), /没有召回结果/);
     console.log("Browser displayed the no-evidence state.");
+    if (generationError) throw generationError;
   } finally {
     if (socket) socket.close();
     browser.kill();

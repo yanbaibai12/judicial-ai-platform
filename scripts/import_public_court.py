@@ -165,7 +165,7 @@ def main() -> None:
         post("/api/v1/admin/capabilities", {
             "code": capability_code, "name": "公开司法资料检索（本地）",
             "type": "RAG_RETRIEVE", "owner": "local-console",
-            "description": "SQL 检索及模拟向量，本地演示；原文来自最高人民法院官网。",
+            "description": "最高人民法院公开资料；向量和重排服务以当前配置为准。",
             "version": "1.0.0", "protocol": "PLATFORM",
             "request_schema": {"type": "object"}, "response_schema": {"type": "object"},
             "tags": ["public", "court", "local"],
