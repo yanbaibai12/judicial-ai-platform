@@ -687,6 +687,7 @@
               </dl>
               <div class="settings-actions">
                 <button class="btn btn-primary" type="button" data-open-token><svg><use href="#i-lock"></use></svg>管理连接</button>
+                <button class="btn btn-quiet" type="button" data-open-tenant-create><svg><use href="#i-grid"></use></svg>新建租户</button>
                 <button class="btn btn-quiet" type="button" id="disconnectBtn">断开并清除</button>
               </div>
             </article>
@@ -865,6 +866,26 @@
     </form>
   </dialog>
 
+  <dialog class="token-dialog form-dialog" id="tenantCreateDialog" aria-labelledby="tenantCreateTitle">
+    <form id="tenantCreateForm">
+      <div class="dialog-head">
+        <div class="dialog-mark"><svg><use href="#i-grid"></use></svg></div>
+        <div><span class="page-kicker">NEW TENANT</span><h2 id="tenantCreateTitle">新建租户</h2></div>
+        <button class="icon-btn" type="button" data-close-dialog="tenantCreateDialog" aria-label="关闭"><svg><use href="#i-close"></use></svg></button>
+      </div>
+      <div class="form-grid">
+        <label class="dialog-field"><span>租户编码</span><input id="tenantCode" required pattern="[a-z0-9][a-z0-9_-]{1,63}" maxlength="64" placeholder="court-example"></label>
+        <label class="dialog-field"><span>租户名称</span><input id="tenantName" required maxlength="128" placeholder="示例法院"></label>
+        <label class="dialog-field"><span>租户类型</span><select id="tenantType"><option value="COURT">法院</option><option value="COMPANY">单位</option><option value="PROJECT">项目</option></select></label>
+        <label class="dialog-field"><span>联系人（可选）</span><input id="tenantContact" maxlength="255"></label>
+      </div>
+      <div class="dialog-error" id="tenantCreateError" hidden role="alert"></div>
+      <div class="dialog-foot">
+        <div><button class="btn btn-quiet" type="button" data-close-dialog="tenantCreateDialog">取消</button><button class="btn btn-primary" type="submit" id="tenantCreateSubmit">创建租户</button></div>
+      </div>
+    </form>
+  </dialog>
+
   <dialog class="token-dialog form-dialog" id="kbCreateDialog" aria-labelledby="kbCreateTitle">
     <form id="kbCreateForm">
       <div class="dialog-head">
@@ -985,6 +1006,6 @@
 
   <div class="toast" id="toast" role="status" aria-live="polite"></div>
 
-  <script src="/console/app.js?v=1" defer></script>
+  <script src="/console/app.js?v=2" defer></script>
 </body>
 </html>

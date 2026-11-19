@@ -1559,6 +1559,44 @@
     }
   }
 
+  function openTenantCreate() {
+    $("#tenantCreateForm").reset();
+    setFormError("tenantCreateError", "");
+    openDialog("tenantCreateDialog");
+  }
+
+  async function submitTenant(event) {
+    event.preventDefault();
+    if (!state.adminToken) {
+      setFormError("tenantCreateError", "请先连接平台并配置管理令牌。");
+      return;
+    }
+    const button = $("#tenantCreateSubmit");
+    const original = button.textContent;
+    button.disabled = true;
+    button.textContent = "创建中…";
+    setFormError("tenantCreateError", "");
+    try {
+      await api("/api/v1/admin/tenants", {
+        method: "POST",
+        body: {
+          code: $("#tenantCode").value.trim(),
+          name: $("#tenantName").value.trim(),
+          type: $("#tenantType").value,
+          contact: $("#tenantContact").value.trim() || null,
+        },
+      });
+      closeDialog("tenantCreateDialog");
+      await hydrateDashboard({ silent: true });
+      toast("租户已创建。");
+    } catch (error) {
+      setFormError("tenantCreateError", error.message || "创建租户失败。");
+    } finally {
+      button.disabled = false;
+      button.textContent = original;
+    }
+  }
+
   function openKbCreate() {
     $("#kbCreateForm").reset();
     $("#kbOwner").value = "ai-platform";
@@ -1924,6 +1962,10 @@
         openCapabilityCreate();
         return;
       }
+      if (event.target.closest("[data-open-tenant-create]")) {
+        openTenantCreate();
+        return;
+      }
       if (event.target.closest("[data-open-kb-create]")) {
         openKbCreate();
         return;
@@ -2053,6 +2095,7 @@
     $("#capabilityType").addEventListener("change", renderCapabilityTable);
     $("#capabilityCreateForm").addEventListener("submit", submitCapability);
     $("#grantForm").addEventListener("submit", submitGrant);
+    $("#tenantCreateForm").addEventListener("submit", submitTenant);
     $("#kbCreateForm").addEventListener("submit", submitKb);
     $("#documentForm").addEventListener("submit", submitDocument);
     $("#evalForm").addEventListener("submit", submitEval);
