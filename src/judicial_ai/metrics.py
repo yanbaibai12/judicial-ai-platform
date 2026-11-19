@@ -124,6 +124,18 @@ def record_capability_invocation(capability_type: str, status: str) -> None:
     )
 
 
+def record_citation_integrity(status: str) -> None:
+    """统计检索引用的可信度分布（VERIFIED / DEGRADED / INVALID / NONE）。"""
+
+    metrics.increment("judicial_citation_integrity_total", {"status": status})
+
+
+def record_document_parse(parser: str, status: str) -> None:
+    """统计文档解析结果（PARSED / PARTIAL / FAILED），用于发现解析质量退化。"""
+
+    metrics.increment("judicial_document_parse_total", {"parser": parser, "status": status})
+
+
 def render_metrics() -> str:
     return metrics.render()
 

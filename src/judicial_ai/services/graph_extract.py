@@ -3,14 +3,14 @@
 import re
 from dataclasses import dataclass
 
-from ..text_utils import normalize_text
+from ..text_utils import bound_text, normalize_text
 
 _LAW = re.compile(
     r"《?[\u4e00-\u9fa5]{2,32}(?:法|条例|规定|解释|纪要|办法|细则)》?"
     r"(?:第[\d一二三四五六七八九十百千]+条)?"
 )
 _CASE = re.compile(r"[（(]\d{4}[）)][\u4e00-\u9fa5]{0,8}\d+号")
-_AMOUNT = re.compile(r"\d+(?:\.\d+)?(?:万|亿)?元")
+_AMOUNT = re.compile(r"(?<!\d)\d+(?:\.\d+)?(?:万|亿)?元")
 _DATE = re.compile(r"\d{4}年\d{1,2}月\d{1,2}日")
 _CONCEPT = re.compile(
     r"(民间借贷|高利放贷|一年期贷款市场报价利率|LPR|合同效力|诉讼时效|管辖|"
@@ -37,6 +37,8 @@ def _add(entities: list[Entity], seen: set[str], name: str, entity_type: str) ->
 
 
 def extract_entities(text: str, limit: int = 24) -> list[Entity]:
+    """按规律抽取实体；扫描前套长度门限，避免对超长输入反复扫描。"""
+    text, _ = bound_text(text)
     entities: list[Entity] = []
     seen: set[str] = set()
     for match in _LAW.findall(text):

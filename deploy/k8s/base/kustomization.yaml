@@ -4,6 +4,7 @@ namespace: judicial-ai
 resources:
   - namespace.yaml
   - configmap.yaml
+  - object-storage-pvc.yaml
   - app-deployment.yaml
   - worker-deployment.yaml
   - ingress.yaml
@@ -16,6 +17,8 @@ images:
     newTag: 0.2.0
   - name: judicial-ai-backup
     newTag: 0.2.0
-commonLabels:
-  app.kubernetes.io/part-of: judicial-ai-platform
+labels:
+  - includeSelectors: true
+    pairs:
+      app.kubernetes.io/part-of: judicial-ai-platform
 

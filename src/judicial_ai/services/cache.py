@@ -8,7 +8,7 @@ from functools import lru_cache
 from typing import Any
 
 from ..config import get_settings
-from ..errors import ApiError
+from ..errors import ApiError, sanitize_exception_summary
 
 
 class MemoryCache:
@@ -104,7 +104,11 @@ class RedisCache:
             self._client.ping()
             return {"status": "ok", "backend": "redis"}
         except Exception as exc:  # noqa: BLE001
-            return {"status": "error", "backend": "redis", "error": str(exc)[:240]}
+            return {
+                "status": "error",
+                "backend": "redis",
+                "error": sanitize_exception_summary(exc),
+            }
 
 
 class Cache:

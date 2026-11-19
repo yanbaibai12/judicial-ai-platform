@@ -136,7 +136,15 @@ def test_http_kb_lifecycle_and_authorization(tmp_path, job_mode):
             tenant = post("/api/v1/admin/tenants", {"code": code, "name": "E2E"}, admin)
             app = post(
                 "/api/v1/admin/apps",
-                {"tenant_id": tenant["id"], "code": "e2e-app", "name": "E2E"},
+                {
+                    "tenant_id": tenant["id"],
+                    "code": "e2e-app",
+                    "name": "E2E",
+                    "permissions": [
+                        "app:invoke", "kb:read", "kb:write", "kb:approve", "kb:promote",
+                        "job:read", "job:write",
+                    ],
+                },
                 admin,
             )
             credential = client.post(
@@ -364,7 +372,15 @@ def test_http_queued_index_rechecks_revoked_access(tmp_path):
             for code in ("owner", "writer"):
                 app = post(
                     "/api/v1/admin/apps",
-                    {"tenant_id": tenant["id"], "code": code, "name": code},
+                    {
+                        "tenant_id": tenant["id"],
+                        "code": code,
+                        "name": code,
+                        "permissions": [
+                            "app:invoke", "kb:read", "kb:write",
+                            "kb:approve", "kb:promote", "job:read", "job:write",
+                        ],
+                    },
                     admin,
                 )
                 response = client.post(

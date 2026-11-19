@@ -8,7 +8,7 @@ echo "[gate] mypy"
 uv run mypy src
 
 echo "[gate] pytest"
-uv run python -m pytest
+uv run python -m pytest --cov=judicial_ai --cov-report=term-missing --cov-fail-under=75
 
 echo "[gate] alembic heads"
 uv run python -m alembic heads >/dev/null

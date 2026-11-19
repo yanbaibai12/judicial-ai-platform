@@ -1,5 +1,6 @@
 ﻿from __future__ import annotations
 
+import hashlib
 import json
 from datetime import datetime, timedelta
 from typing import Any
@@ -7,9 +8,9 @@ from typing import Any
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from ..acl import assert_access
+from ..acl import accessible_document_ids, assert_access
 from ..config import get_settings
-from ..errors import ApiError
+from ..errors import ApiError, sanitize_exception_summary
 from ..ids import new_id
 from ..models import (
     AiEvent,
@@ -18,6 +19,7 @@ from ..models import (
     AuditLog,
     BadCase,
     Capability,
+    ChunkMeta,
     Dataset,
     DatasetItem,
     DatasetLineage,
@@ -25,6 +27,9 @@ from ..models import (
     EvalResult,
     EvalTask,
     Feedback,
+    IndexChunkSnapshot,
+    IndexVersion,
+    KbVersion,
     RetentionJob,
     UsageRecord,
     utcnow,
@@ -41,6 +46,7 @@ from ..schemas import (
     RetentionJobCreate,
 )
 from ..security import Principal
+from .eval_metrics import compute_content_hash
 from .governance_pipeline import (
     PIPELINE_VERSION,
     REDACTION_RULES_VERSION,
@@ -54,7 +60,7 @@ from .governance_pipeline import (
     sanitize_text,
     simhash,
 )
-from .observability import record_event
+from .observability import audit, record_event
 from .retrieval import get_kb, retrieve
 
 
@@ -233,6 +239,26 @@ def _add_lineage(
     return record
 
 
+def _assert_version_writable(db: Session, version: DatasetVersion) -> None:
+    """冻结版本不可写（AC-1.2）。
+
+    任何对 `dataset_item` 的追加/修改都必须先过这里；命中时记
+    `dataset.version.write_rejected` 并抛 409，不静默改写历史。
+    """
+    if not version.is_frozen:
+        return
+    audit(
+        db,
+        Principal(kind="app", tenant_id=None, app_code="system"),
+        "dataset.version.write_rejected",
+        "dataset_version",
+        int(version.id),
+        after={"status": version.status},
+    )
+    db.commit()
+    raise ApiError("JOB_STATE_INVALID", "已冻结的数据集版本不能写入", 409)
+
+
 def _event_candidate(event: AiEvent) -> dict[str, Any]:
     payload = event.payload or {}
     instruction, input_text = _flatten_input_text(payload)
@@ -324,6 +350,189 @@ def _feedback_candidate(
     }
 
 
+_RETRIEVAL_FEEDBACK_SOURCE = "retrieval_feedback"
+_RETRIEVAL_BAD_CASE_SOURCE = "retrieval_bad_case"
+
+
+def _is_feedback_regression(version: DatasetVersion) -> bool:
+    return (version.source_snapshot or {}).get("source") in {
+        _RETRIEVAL_FEEDBACK_SOURCE, _RETRIEVAL_BAD_CASE_SOURCE,
+    }
+
+
+def _check_regression_access(
+    db: Session,
+    principal: Principal,
+    tenant_id: int,
+    kb_ids: list[int],
+    chunk_ids: list[str],
+) -> None:
+    for kb_id in set(kb_ids):
+        kb = get_kb(db, tenant_id, kb_id)
+        assert_access(db, principal, "kb", kb.id)
+    if not chunk_ids:
+        return
+    chunks = (
+        db.query(ChunkMeta)
+        .filter(
+            ChunkMeta.tenant_id == tenant_id,
+            ChunkMeta.kb_id.in_(kb_ids),
+            ChunkMeta.chunk_id.in_(chunk_ids),
+        )
+        .all()
+    )
+    visible = accessible_document_ids(db, principal, tenant_id, kb_ids)
+    if len(chunks) != len(set(chunk_ids)) or any(c.document_id not in visible for c in chunks):
+        raise ApiError("FORBIDDEN", "评测样本引用的文档不存在或无权访问", 403)
+
+
+def _check_regression_item_access(
+    db: Session, principal: Principal, tenant_id: int, item: DatasetItem
+) -> None:
+    inputs = item.input or {}
+    kb_ids = [int(value) for value in inputs.get("kb_ids") or []]
+    chunks = set((item.output or {}).get("chunk_ids") or [])
+    chunks.update((item.label or {}).get("relevant_chunk_ids") or [])
+    _check_regression_access(db, principal, tenant_id, kb_ids, list(chunks))
+
+
+def _validate_regression_label(
+    db: Session, principal: Principal, tenant_id: int, item: DatasetItem, label: dict[str, Any]
+) -> list[str]:
+    ids = label.get("relevant_chunk_ids")
+    expect_empty = label.get("expect_empty") is True
+    if (
+        set(label) not in ({"relevant_chunk_ids"}, {"relevant_chunk_ids", "expect_empty"})
+        or not isinstance(ids, list)
+        or (not ids and not expect_empty)
+        or (bool(ids) and "expect_empty" in label)
+        or ("expect_empty" in label and not expect_empty)
+        or len(ids) > 100
+        or any(not isinstance(value, str) or not value or len(value) > 64 for value in ids)
+        or len(set(ids)) != len(ids)
+    ):
+        raise ApiError("INVALID_ARGUMENT", "需提供相关分块，或明确标注 expect_empty", 400)
+    kb_ids = [int(value) for value in (item.input or {}).get("kb_ids") or []]
+    _check_regression_item_access(db, principal, tenant_id, item)
+    _check_regression_access(db, principal, tenant_id, kb_ids, ids)
+    refs = (item.extra or {}).get("retrieval_index_refs") or {}
+    index_ids = []
+    for kb_id in kb_ids:
+        index = db.query(IndexVersion).filter_by(kb_id=kb_id, id=refs.get(str(kb_id))).first()
+        if index is None:
+            raise ApiError("RESOURCE_CONFLICT", "原检索索引快照不存在", 409)
+        index_ids.append(index.id)
+    found = {
+        row[0] for row in db.query(IndexChunkSnapshot.chunk_id).filter(
+            IndexChunkSnapshot.index_version_id.in_(index_ids),
+            IndexChunkSnapshot.chunk_id.in_(ids),
+        ).all()
+    }
+    if found != set(ids):
+        raise ApiError("INVALID_ARGUMENT", "标注切片不属于原检索索引快照", 400)
+    return sorted(ids)
+
+
+def _feedback_retrieval_candidates(
+    db: Session, principal: Principal, dataset: Dataset, snapshot: dict[str, Any]
+) -> list[dict[str, Any]]:
+    bad_case_source = snapshot.get("source") == _RETRIEVAL_BAD_CASE_SOURCE
+    field = "bad_case_ids" if bad_case_source else "feedback_ids"
+    raw_ids = snapshot.get(field)
+    if (
+        not isinstance(raw_ids, list)
+        or not raw_ids
+        or len(raw_ids) > 100
+        or any(
+            isinstance(value, bool)
+            or not (
+                isinstance(value, int)
+                or isinstance(value, str)
+                and value.isascii()
+                and value.isdecimal()
+                and len(value) <= 19
+            )
+            for value in raw_ids
+        )
+    ):
+        raise ApiError("INVALID_ARGUMENT", f"{field} 必须是 1 至 100 个不同的 ID", 400)
+    ids = [int(value) for value in raw_ids]
+    if any(value <= 0 or value > 2**63 - 1 for value in ids) or len(set(ids)) != len(ids):
+        raise ApiError("INVALID_ARGUMENT", f"{field} 必须是 1 至 100 个不同的 ID", 400)
+    model = BadCase if bad_case_source else Feedback
+    records = (
+        db.query(model)
+        .filter(model.tenant_id == dataset.tenant_id, model.id.in_(ids))
+        .all()
+    )
+    if len(records) != len(ids):
+        raise ApiError("RESOURCE_NOT_FOUND", "来源记录不存在或不属于当前租户", 404)
+    candidates: list[dict[str, Any]] = []
+    for record in records:
+        event_query = db.query(AiEvent).filter(
+            AiEvent.tenant_id == dataset.tenant_id,
+            AiEvent.request_id == record.request_id,
+            AiEvent.event_type == "RETRIEVAL_COMPLETED",
+        )
+        if not bad_case_source:
+            event_query = event_query.filter(AiEvent.app_id == record.app_id)
+        if not record.request_id:
+            raise ApiError("RESOURCE_CONFLICT", "来源记录缺少检索请求 ID", 409)
+        events = event_query.all()
+        if len(events) != 1:
+            raise ApiError("RESOURCE_CONFLICT", "反馈必须唯一关联一条检索事件", 409)
+        event = events[0]
+        data = event.payload or {}
+        kb_ids = data.get("kb_ids")
+        versions = data.get("versions")
+        if (
+            not isinstance(data.get("query"), str)
+            or not data["query"].strip()
+            or not isinstance(kb_ids, list)
+            or not kb_ids
+            or any(isinstance(kb_id, bool) or not isinstance(kb_id, int) for kb_id in kb_ids)
+            or not isinstance(versions, dict)
+        ):
+            raise ApiError("RESOURCE_CONFLICT", "检索事件缺少查询或索引版本快照", 409)
+        raw_refs = data.get("version_refs") or []
+        refs = {
+            str(ref["kb_id"]): ref["index_id"]
+            for ref in raw_refs
+            if isinstance(ref, dict)
+            and isinstance(ref.get("kb_id"), int)
+            and isinstance(ref.get("index_id"), int)
+        }
+        resolved_versions = {}
+        resolved_refs = {}
+        for kb_id in kb_ids:
+            query = db.query(IndexVersion).filter(IndexVersion.kb_id == kb_id)
+            ref = refs.get(str(kb_id))
+            index_name = (versions.get(str(kb_id)) or {}).get("index")
+            index = query.filter(
+                IndexVersion.id == ref if ref is not None else IndexVersion.version == index_name
+            ).first()
+            kb_version = db.get(KbVersion, index.kb_version_id) if index is not None else None
+            if index is None or kb_version is None or kb_version.kb_id != kb_id:
+                raise ApiError("RESOURCE_CONFLICT", "原检索索引快照无法确定", 409)
+            resolved_refs[str(kb_id)] = index.id
+            resolved_versions[str(kb_id)] = {"kb": kb_version.version, "index": index.version}
+        chunk_ids = [str(value) for value in data.get("chunk_ids") or []]
+        _check_regression_access(db, principal, dataset.tenant_id, kb_ids, chunk_ids)
+        candidates.append({
+            "source_event_id": event.event_id,
+            "request_id": event.request_id,
+            "feedback_id": record.id if not bad_case_source else None,
+            "bad_case_id": record.id if bad_case_source else None,
+            "item_type": snapshot["source"],
+            "query": data["query"],
+            "kb_ids": kb_ids,
+            "chunk_ids": chunk_ids,
+            "versions": resolved_versions,
+            "index_refs": resolved_refs,
+        })
+    return candidates
+
+
 def create_dataset_version(
     db: Session,
     principal: Principal,
@@ -344,12 +553,24 @@ def create_dataset_version(
     settings = get_settings()
     source_snapshot = payload.source_snapshot or {}
     filter_config = payload.filter_config or {}
+    feedback_regression = source_snapshot.get("source") in {
+        _RETRIEVAL_FEEDBACK_SOURCE, _RETRIEVAL_BAD_CASE_SOURCE,
+    }
+    if feedback_regression:
+        if dataset.type != "RETRIEVAL_EVAL" or payload.publish:
+            raise ApiError("INVALID_ARGUMENT", "反馈回归需要未发布的 RETRIEVAL_EVAL 版本", 400)
+        if filter_config.get("redact") is False or filter_config.get("dedup"):
+            raise ApiError("INVALID_ARGUMENT", "反馈回归必须脱敏且不能自动去重", 400)
+        if payload.split != {"train": 0.0, "validation": 0.0, "test": 1.0}:
+            raise ApiError("INVALID_ARGUMENT", "反馈回归样本必须全部放入测试集", 400)
     from_time = _parse_datetime(source_snapshot.get("from"))
     to_time = _parse_datetime(source_snapshot.get("to"))
     event_types = [str(item) for item in (source_snapshot.get("event_types") or [])]
 
     candidates: list[dict[str, Any]] = []
-    if event_types:
+    if feedback_regression:
+        candidates = _feedback_retrieval_candidates(db, principal, dataset, source_snapshot)
+    elif event_types:
         query = db.query(AiEvent).filter(
             AiEvent.tenant_id == dataset.tenant_id,
             AiEvent.event_type.in_(event_types),
@@ -376,13 +597,13 @@ def create_dataset_version(
         id=new_id(),
         dataset_id=dataset.id,
         version=payload.version,
-        status="PUBLISHED" if payload.publish else "DRAFT",
+        status="DRAFT",
         source_snapshot=source_snapshot,
         filter_config=filter_config,
         prelabel_model="rule-based/v1",
         stats={},
         created_by=principal.app_id or 0,
-        published_at=utcnow() if payload.publish else None,
+        published_at=None,
     )
     db.add(version)
     db.flush()
@@ -398,7 +619,9 @@ def create_dataset_version(
             "dedup_hamming_distance", settings.governance_dedup_hamming_distance
         )
     )
-    redact = bool(filter_config.get("redact", settings.governance_redaction_enabled))
+    redact = True if feedback_regression else bool(
+        filter_config.get("redact", settings.governance_redaction_enabled)
+    )
     citation_required = bool(filter_config.get("citation_required", False))
     excluded_security_levels = tuple(
         filter_config.get("exclude_security_levels")
@@ -433,9 +656,9 @@ def create_dataset_version(
                 rejected += 1
                 continue
             chunk_ids = [str(item) for item in candidate.get("chunk_ids") or []]
-            relevant = [
-                str(item) for item in candidate.get("relevant_chunk_ids") or []
-            ] or chunk_ids
+            relevant = [] if feedback_regression else (
+                [str(item) for item in candidate.get("relevant_chunk_ids") or []] or chunk_ids
+            )
             digest = content_digest(query_text)
             if dedup_enabled and digest in seen_digests:
                 duplicate += 1
@@ -453,7 +676,7 @@ def create_dataset_version(
                     "output": {"chunk_ids": chunk_ids},
                     "label": {"relevant_chunk_ids": relevant},
                     "quality_score": 1.0,
-                    "review_status": "AUTO_ACCEPTED",
+                    "review_status": "NEEDS_REVIEW" if feedback_regression else "AUTO_ACCEPTED",
                     "redaction": query_counts,
                     "quality": {"rules": {"query_not_empty": True}},
                 }
@@ -582,6 +805,12 @@ def create_dataset_version(
                 extra={
                     "sources": [candidate.get("request_id") or candidate.get("source_event_id")],
                     "source_event_id": candidate.get("source_event_id"),
+                    **({
+                        "feedback_id": candidate["feedback_id"],
+                        "bad_case_id": candidate["bad_case_id"],
+                        "retrieval_versions": candidate["versions"],
+                        "retrieval_index_refs": candidate["index_refs"],
+                    } if feedback_regression else {}),
                     "security_level": candidate.get("security_level", "INTERNAL"),
                     "quality": item["quality"],
                     "redaction": item["redaction"],
@@ -594,6 +823,28 @@ def create_dataset_version(
             )
         )
 
+    version.status = "PUBLISHED" if payload.publish else "DRAFT"
+    version.redaction_rule_version = REDACTION_RULES_VERSION
+    version.content_hash = compute_content_hash(
+        [
+            {
+                "sample_id": str(item["candidate"].get("source_event_id") or index),
+                "scenario": str(item["candidate"].get("item_type") or ""),
+                "question": (item["input"] or {}).get("query") or "",
+                "expected_answer_type": (
+                    "abstain" if (item["label"] or {}).get("abstain_required") else "answer"
+                ),
+                "abstain_required": bool((item["label"] or {}).get("abstain_required")),
+                "difficulty_score": 0,
+                "expected_citations": (item["label"] or {}).get("relevant_chunk_ids") or [],
+            }
+            for index, item in enumerate(accepted)
+        ],
+        redaction_rule_version=REDACTION_RULES_VERSION,
+    )
+    if payload.publish:
+        version.frozen_at = utcnow()
+        version.published_at = utcnow()
     version.stats = {
         "total": total,
         "source_count": len(candidates),
@@ -833,6 +1084,11 @@ def publish_dataset_version(
     db: Session, principal: Principal, version_id: int
 ) -> DatasetVersion:
     dataset, version = _dataset_version_for(db, principal, version_id)
+    if _is_feedback_regression(version):
+        version = (
+            db.query(DatasetVersion).filter_by(id=version.id)
+            .populate_existing().with_for_update().one()
+        )
     if version.status == "ARCHIVED":
         raise ApiError("JOB_STATE_INVALID", "已归档版本不能发布", 409)
     if version.status == "PUBLISHED":
@@ -845,16 +1101,126 @@ def publish_dataset_version(
     )
     if item_count == 0:
         raise ApiError("JOB_STATE_INVALID", "空数据集版本不能发布", 409)
+    items = (
+        db.query(DatasetItem)
+        .filter(DatasetItem.dataset_version_id == version.id)
+        .order_by(DatasetItem.created_at)
+        .populate_existing()
+        .with_for_update()
+        .all()
+    )
+    if _is_feedback_regression(version):
+        for item in items:
+            _check_regression_item_access(db, principal, dataset.tenant_id, item)
+        items = [item for item in items if item.review_status != "EXCLUDED"]
+        if not items:
+            raise ApiError("JOB_STATE_INVALID", "不能发布全部剔除的数据集", 409)
+        for item in items:
+            if item.review_status not in {"APPROVED", "ARBITRATED"}:
+                raise ApiError("JOB_STATE_INVALID", "反馈回归样本必须全部通过人工审核", 409)
+            _validate_regression_label(db, principal, dataset.tenant_id, item, item.label or {})
+    version.content_hash = compute_content_hash(
+        [
+            {
+                "sample_id": str(item.source_event_id or item.id),
+                "scenario": str((item.label or {}).get("scenario") or item.item_type or ""),
+                "question": (item.input or {}).get("query") or "",
+                "expected_answer_type": (
+                    "empty_retrieval" if (item.label or {}).get("expect_empty")
+                    else "abstain" if (item.label or {}).get("abstain_required")
+                    else "answer"
+                ),
+                "abstain_required": bool((item.label or {}).get("abstain_required")),
+                "difficulty_score": int((item.label or {}).get("difficulty_score") or 0),
+                "expected_citations": (item.label or {}).get("relevant_chunk_ids") or [],
+            }
+            for item in items
+        ],
+        redaction_rule_version=version.redaction_rule_version or REDACTION_RULES_VERSION,
+    )
+    if not version.redaction_rule_version:
+        version.redaction_rule_version = REDACTION_RULES_VERSION
     version.status = "PUBLISHED"
     version.approved_by = principal.app_id or 0
+    version.frozen_at = version.frozen_at or utcnow()
     version.published_at = utcnow()
     _add_lineage(
         db,
         dataset.tenant_id,
         version.id,
         "PUBLISH",
-        output_ref={"status": "PUBLISHED", "item_count": int(item_count)},
+        output_ref={"status": "PUBLISHED", "item_count": len(items)},
         operator_id=principal.app_id or 0,
+    )
+    db.commit()
+    db.refresh(version)
+    return version
+
+
+def exclude_rejected_dataset_items(
+    db: Session, principal: Principal, version_id: int, item_ids: list[int], reason: str
+) -> DatasetVersion:
+    dataset, version = _dataset_version_for(db, principal, version_id)
+    if not _is_feedback_regression(version):
+        raise ApiError("INVALID_ARGUMENT", "只能剔除反馈回归数据集中的驳回样本", 400)
+    if get_settings().is_delivery_environment and (
+        principal.kind != "user" or not principal.user_id
+    ):
+        raise ApiError("FORBIDDEN", "交付环境的样本剔除需要实名用户", 403)
+    version = (
+        db.query(DatasetVersion).filter_by(id=version.id)
+        .populate_existing().with_for_update().one()
+    )
+    _assert_version_writable(db, version)
+    if not reason.strip() or any(item_id <= 0 for item_id in item_ids):
+        raise ApiError("INVALID_ARGUMENT", "需提供有效的样本 ID 和剔除原因", 400)
+    if len(set(item_ids)) != len(item_ids):
+        raise ApiError("INVALID_ARGUMENT", "样本 ID 不得重复", 400)
+    tasks = (
+        db.query(AnnotationTask).filter_by(dataset_version_id=version.id)
+        .with_for_update().all()
+    )
+    if any(task.status != "COMPLETED" for task in tasks):
+        raise ApiError("JOB_STATE_INVALID", "审核任务完成后才能剔除样本", 409)
+    items = (
+        db.query(DatasetItem)
+        .filter(DatasetItem.dataset_version_id == version.id, DatasetItem.id.in_(item_ids))
+        .populate_existing().with_for_update().all()
+    )
+    if len(items) != len(item_ids):
+        raise ApiError("RESOURCE_NOT_FOUND", "样本不存在或不属于该版本", 404)
+    masked_reason, _counts = sanitize_text(reason.strip(), redact=True, max_chars=512)
+    for item in items:
+        if item.review_status != "REJECTED":
+            raise ApiError("JOB_STATE_INVALID", "只能剔除已驳回的样本", 409)
+        _check_regression_item_access(db, principal, dataset.tenant_id, item)
+        item.review_status = "EXCLUDED"
+        item.extra = {
+            **(item.extra or {}),
+            "exclusion": {
+                "reason": masked_reason,
+                "actor_kind": principal.kind,
+                "actor_id": principal.user_id if principal.kind == "user" else principal.app_id,
+                "at": utcnow().isoformat(),
+            },
+        }
+    db.flush()
+    statuses = (
+        db.query(DatasetItem.review_status)
+        .filter(DatasetItem.dataset_version_id == version.id)
+        .with_for_update()
+        .all()
+    )
+    excluded_count = sum(1 for (status,) in statuses if status == "EXCLUDED")
+    version.stats = {
+        **(version.stats or {}),
+        "excluded": excluded_count,
+        "included": len(statuses) - excluded_count,
+    }
+    _add_lineage(
+        db, dataset.tenant_id, version.id, "EXCLUDE",
+        input_ref={"item_ids": item_ids}, output_ref={"excluded": len(items)},
+        config={"reason": masked_reason}, operator_id=principal.app_id or 0,
     )
     db.commit()
     db.refresh(version)
@@ -864,13 +1230,17 @@ def publish_dataset_version(
 def list_dataset_items(
     db: Session, principal: Principal, version_id: int
 ) -> list[DatasetItem]:
-    _dataset, version = _dataset_version_for(db, principal, version_id)
-    return (
+    dataset, version = _dataset_version_for(db, principal, version_id)
+    items = (
         db.query(DatasetItem)
         .filter(DatasetItem.dataset_version_id == version.id)
         .order_by(DatasetItem.created_at)
         .all()
     )
+    if _is_feedback_regression(version):
+        for item in items:
+            _check_regression_item_access(db, principal, dataset.tenant_id, item)
+    return items
 
 
 def list_dataset_lineage(
@@ -903,6 +1273,10 @@ def export_dataset_version(
         .order_by(DatasetItem.created_at)
         .all()
     )
+    if _is_feedback_regression(version):
+        for item in items:
+            _check_regression_item_access(db, principal, dataset.tenant_id, item)
+        items = [item for item in items if item.review_status != "EXCLUDED"]
     watermark = f"{settings.governance_watermark}:{dataset.code}:{version.version}"
     rows = []
     for item in items:
@@ -963,6 +1337,36 @@ def create_annotation_task(
         dataset, dataset_version = _dataset_version_for(
             db, principal, payload.dataset_version_id
         )
+        if _is_feedback_regression(dataset_version):
+            dataset_version = (
+                db.query(DatasetVersion).filter_by(id=dataset_version.id)
+                .populate_existing().with_for_update().one()
+            )
+            _assert_version_writable(db, dataset_version)
+            if payload.task_type != "RETRIEVAL":
+                raise ApiError("INVALID_ARGUMENT", "反馈回归需使用检索标注任务", 400)
+            existing_tasks = (
+                db.query(AnnotationTask)
+                .filter_by(dataset_version_id=dataset_version.id)
+                .with_for_update()
+                .all()
+            )
+            items = (
+                db.query(DatasetItem).filter_by(dataset_version_id=dataset_version.id)
+                .populate_existing().with_for_update().all()
+            )
+            if existing_tasks:
+                if any(task.status != "COMPLETED" for task in existing_tasks):
+                    raise ApiError("RESOURCE_CONFLICT", "反馈回归版本已有未完成的标注任务", 409)
+                if not any(item.review_status == "REJECTED" for item in items):
+                    raise ApiError("RESOURCE_CONFLICT", "没有需要重新审核的驳回样本", 409)
+                minimum_reviewers = max(task.required_reviewers for task in existing_tasks)
+                if payload.required_reviewers < minimum_reviewers:
+                    raise ApiError("INVALID_ARGUMENT", "重新审核不能降低审核人数", 400)
+            for item in items:
+                _check_regression_item_access(db, principal, dataset.tenant_id, item)
+                if existing_tasks and item.review_status == "REJECTED":
+                    item.review_status = "NEEDS_REVIEW"
     tenant_id = dataset.tenant_id if dataset is not None else (principal.tenant_id or 0)
     total_items = payload.total_items
     if dataset_version is not None and total_items <= 0:
@@ -1033,9 +1437,23 @@ def _refresh_annotation_task_status(db: Session, task: AnnotationTask) -> None:
     items = (
         db.query(DatasetItem)
         .filter(DatasetItem.dataset_version_id == task.dataset_version_id)
+        .populate_existing()
+        .with_for_update()
         .all()
     )
     if not items:
+        return
+    version = db.get(DatasetVersion, task.dataset_version_id)
+    if version is not None and _is_feedback_regression(version):
+        task.total_items = len(items)
+        task.status = (
+            "COMPLETED"
+            if all(
+                item.review_status in {"APPROVED", "REJECTED", "ARBITRATED", "EXCLUDED"}
+                for item in items
+            )
+            else "IN_PROGRESS"
+        )
         return
     completed = 0
     for item in items:
@@ -1065,11 +1483,56 @@ def submit_annotation_record(
         raise ApiError("RESOURCE_NOT_FOUND", "标注样本不存在", 404)
     if task.dataset_version_id and item.dataset_version_id != task.dataset_version_id:
         raise ApiError("INVALID_ARGUMENT", "样本不属于该标注任务", 400)
-    reviewer_id = (
-        payload.reviewer_id
-        if payload.reviewer_id is not None
-        else (principal.app_id or 0)
-    )
+    version = db.get(DatasetVersion, item.dataset_version_id)
+    strict = version is not None and _is_feedback_regression(version)
+    label = payload.label
+    if strict:
+        if task.dataset_version_id != version.id or task.task_type != "RETRIEVAL":
+            raise ApiError("INVALID_ARGUMENT", "样本不属于该检索标注任务", 400)
+        version = (
+            db.query(DatasetVersion).filter_by(id=version.id)
+            .populate_existing().with_for_update().one()
+        )
+        task = (
+            db.query(AnnotationTask).filter_by(id=task.id)
+            .populate_existing().with_for_update().one()
+        )
+        item = (
+            db.query(DatasetItem).filter_by(id=item.id)
+            .populate_existing().with_for_update().one()
+        )
+        if get_settings().is_delivery_environment and principal.kind != "user":
+            raise ApiError("FORBIDDEN", "交付环境的反馈回归审核需要实名用户", 403)
+        _assert_version_writable(db, version)
+        if task.status in {"COMPLETED", "CANCELLED"}:
+            raise ApiError("JOB_STATE_INVALID", "标注任务已完成", 409)
+        if item.review_status in {"APPROVED", "REJECTED", "ARBITRATED"}:
+            raise ApiError("JOB_STATE_INVALID", "该样本已完成本轮审核", 409)
+        _check_regression_item_access(db, principal, task.tenant_id, item)
+        identity = principal.user_id if principal.kind == "user" else str(principal.app_id or "")
+        if not identity and principal.kind == "admin":
+            identity = "static-admin"
+        if not identity:
+            raise ApiError("AUTH_INVALID", "标注主体缺少稳定身份", 401)
+        material = f"{task.tenant_id}:{principal.kind}:{identity}".encode()
+        reviewer_id = int.from_bytes(hashlib.sha256(material).digest()[:8], "big") & ((1 << 63) - 1)
+        if payload.reviewer_id is not None and payload.reviewer_id != reviewer_id:
+            raise ApiError("FORBIDDEN", "不能指定其他标注人身份", 403)
+        if payload.decision in {"APPROVED", "ARBITRATED"}:
+            ids = _validate_regression_label(db, principal, task.tenant_id, item, payload.label)
+            label = {"relevant_chunk_ids": ids}
+            if payload.label.get("expect_empty") is True:
+                label["expect_empty"] = True
+        elif payload.label:
+            raise ApiError("INVALID_ARGUMENT", "驳回时不应提供证据标签", 400)
+        if payload.decision == "ARBITRATED" and item.review_status != "CONFLICT":
+            raise ApiError("JOB_STATE_INVALID", "只有存在审核分歧时才能仲裁", 409)
+    else:
+        reviewer_id = (
+            payload.reviewer_id
+            if payload.reviewer_id is not None
+            else (principal.app_id or 0)
+        )
     existing = (
         db.query(AnnotationRecord)
         .filter(
@@ -1077,6 +1540,7 @@ def submit_annotation_record(
             AnnotationRecord.item_id == item.id,
             AnnotationRecord.reviewer_id == reviewer_id,
         )
+        .with_for_update()
         .first()
     )
     if existing:
@@ -1086,7 +1550,7 @@ def submit_annotation_record(
         task_id=task.id,
         item_id=item.id,
         reviewer_id=reviewer_id,
-        label=payload.label,
+        label=label,
         decision=payload.decision,
         confidence=payload.confidence,
         comment=payload.comment,
@@ -1100,10 +1564,31 @@ def submit_annotation_record(
             AnnotationRecord.task_id == task.id,
             AnnotationRecord.item_id == item.id,
         )
+        .with_for_update()
         .all()
     )
     decisions = {record_item.decision for record_item in records}
-    if "ARBITRATED" in decisions:
+    if strict and payload.decision == "ARBITRATED":
+        item.review_status = "ARBITRATED"
+        item.label = label
+    elif strict and "ARBITRATED" in decisions:
+        raise ApiError("JOB_STATE_INVALID", "样本已仲裁", 409)
+    elif strict and len(records) >= task.required_reviewers:
+        approved_labels = {
+            tuple((record_item.label or {}).get("relevant_chunk_ids") or [])
+            for record_item in records if record_item.decision == "APPROVED"
+        }
+        if decisions == {"APPROVED"} and len(approved_labels) == 1:
+            item.review_status = "APPROVED"
+            ids = list(next(iter(approved_labels)))
+            item.label = {"relevant_chunk_ids": ids, **({"expect_empty": True} if not ids else {})}
+        elif decisions == {"REJECTED"}:
+            item.review_status = "REJECTED"
+            item.label = {"relevant_chunk_ids": []}
+        else:
+            item.review_status = "CONFLICT"
+            item.label = {"relevant_chunk_ids": []}
+    elif "ARBITRATED" in decisions:
         item.review_status = "ARBITRATED"
     elif len(records) >= task.required_reviewers:
         if decisions == {"APPROVED"}:
@@ -1115,6 +1600,7 @@ def submit_annotation_record(
     else:
         item.review_status = "IN_REVIEW"
 
+    db.flush()
     _refresh_annotation_task_status(db, task)
     if task.dataset_version_id:
         _add_lineage(
@@ -1229,6 +1715,21 @@ def create_eval_task(
     db: Session, principal: Principal, payload: EvalTaskCreate, *, run: bool = True
 ) -> tuple[EvalTask, list[EvalResult]]:
     dataset, version = _dataset_version_for(db, principal, payload.dataset_version_id)
+    if _is_feedback_regression(version):
+        if version.status != "PUBLISHED" or payload.target_type != "RETRIEVAL":
+            raise ApiError("JOB_STATE_INVALID", "反馈回归必须使用已发布版本进行检索评测", 409)
+        gates = payload.config.get("gates") or {}
+        allowed_gates = {"recall_at_k", "precision_at_5", "mrr", "ndcg_at_10", "empty_accuracy"}
+        if not isinstance(gates, dict) or any(
+            key not in allowed_gates
+            or isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not 0 < value <= 1
+            for key, value in gates.items()
+        ):
+            raise ApiError("INVALID_ARGUMENT", "检索回归门槛名称或阈值无效", 400)
+        for item in db.query(DatasetItem).filter_by(dataset_version_id=version.id):
+            _check_regression_item_access(db, principal, dataset.tenant_id, item)
     task = EvalTask(
         id=new_id(),
         tenant_id=dataset.tenant_id,
@@ -1277,6 +1778,14 @@ def _run_eval_task(
     )
     config = task.config or {}
     try:
+        if _is_feedback_regression(version):
+            items = [item for item in items if item.review_status != "EXCLUDED"]
+            if version.status != "PUBLISHED" or task.target_type != "RETRIEVAL" or not items:
+                raise ApiError("JOB_STATE_INVALID", "反馈回归评测版本无效", 409)
+            for item in items:
+                if item.review_status not in {"APPROVED", "ARBITRATED"}:
+                    raise ApiError("JOB_STATE_INVALID", "评测样本未通过人工审核", 409)
+                _validate_regression_label(db, principal, dataset.tenant_id, item, item.label or {})
         if dataset.type == "RETRIEVAL_EVAL" or task.target_type == "RETRIEVAL":
             metrics = _run_retrieval_eval(db, task, items, config, principal)
         else:
@@ -1309,10 +1818,11 @@ def _run_eval_task(
         )
         return results
     except Exception as exc:  # noqa: BLE001 - 评测失败需落库并保留现场
+        error = str(exc)[:1000] if isinstance(exc, ApiError) else sanitize_exception_summary(exc)
         task.status = "FAILED"
-        task.error = str(exc)[:1000]
+        task.error = error
         task.finished_at = utcnow()
-        task.metrics = {"error": str(exc)[:1000]}
+        task.metrics = {"error": error}
         return []
 
 
@@ -1331,6 +1841,8 @@ def _run_retrieval_eval(
         "ndcg_at_10": [],
     }
     samples = 0
+    empty_results: list[float] = []
+    evaluated_versions: list[dict[str, Any]] = []
     for item in items:
         input_payload = item.input or {}
         query = str(input_payload.get("query") or "")
@@ -1340,9 +1852,11 @@ def _run_retrieval_eval(
         for kb_id in set(kb_ids):
             kb = get_kb(db, task.tenant_id, kb_id)
             assert_access(db, principal, "kb", kb.id)
+        label = item.label or {}
+        expect_empty = label.get("expect_empty") is True
         relevant = [
             str(value)
-            for value in (item.label or {}).get("relevant_chunk_ids")
+            for value in label.get("relevant_chunk_ids")
             or (item.output or {}).get("chunk_ids")
             or []
         ]
@@ -1360,16 +1874,37 @@ def _run_retrieval_eval(
             principal=principal,
         )
         retrieved = [str(hit["chunk_id"]) for hit in result.get("results", [])]
-        metrics = retrieval_metrics(relevant, retrieved, top_k)
-        for name, value in metrics.items():
-            aggregates.setdefault(name, []).append(float(value))
+        if item.item_type in {_RETRIEVAL_FEEDBACK_SOURCE, _RETRIEVAL_BAD_CASE_SOURCE}:
+            evaluated_versions.append({
+                "item_id": item.id,
+                "versions": result.get("versions") or {},
+            })
+        if expect_empty:
+            empty_results.append(float(not retrieved))
+        else:
+            metrics = retrieval_metrics(relevant, retrieved, top_k)
+            for name, value in metrics.items():
+                aggregates.setdefault(name, []).append(float(value))
         samples += 1
-    result: dict[str, Any] = {"samples": samples}
+    result: dict[str, Any] = {
+        "samples": samples,
+        "relevant_samples": len(aggregates["recall_at_k"]),
+        "empty_samples": len(empty_results),
+    }
+    if evaluated_versions:
+        result["evaluated_versions"] = evaluated_versions
+    if empty_results:
+        result["empty_accuracy"] = round(sum(empty_results) / len(empty_results), 6)
+    if samples == 0:
+        raise ApiError("JOB_STATE_INVALID", "没有可执行的检索评测样本", 409)
     for name, values in aggregates.items():
         result[name] = round(sum(values) / len(values), 6) if values else 0.0
     gates = config.get("gates") or {}
     gate_results = {
-        name: result.get(name, 0.0) >= float(threshold)
+        name: (
+            bool(empty_results if name == "empty_accuracy" else aggregates.get(name))
+            and result.get(name, 0.0) >= float(threshold)
+        )
         for name, threshold in gates.items()
     }
     if gate_results:

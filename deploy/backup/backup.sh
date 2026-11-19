@@ -1,5 +1,5 @@
 #!/bin/sh
-# 司法 AI 中台备份脚本（PostgreSQL + Neo4j + MinIO）
+# 司法 AI 中台备份脚本（MySQL + Neo4j + 对象存储）
 # 设计目标：CronJob 内以非 root 运行，失败显式退出码，保留期自动清理。
 set -eu
 
@@ -11,15 +11,23 @@ mkdir -p "${TARGET}"
 
 log() { echo "[backup ${STAMP}] $*"; }
 
-# 1) PostgreSQL（平台元数据）
+# 1) MySQL（平台元数据）
 if [ -n "${DATABASE_URL:-}" ]; then
-  if command -v pg_dump >/dev/null 2>&1; then
-    log "dumping PostgreSQL ..."
-    pg_dump "${DATABASE_URL}" --no-owner --format=custom \
-      -f "${TARGET}/postgres.dump"
-  else
-    log "WARN: pg_dump 不可用，跳过 PostgreSQL"
-  fi
+  REST="${DATABASE_URL#*://}"
+  CREDENTIAL="${REST%%@*}"
+  HOSTPART="${REST#*@}"
+  MYSQL_USER="${CREDENTIAL%%:*}"
+  MYSQL_PASSWORD="${CREDENTIAL#*:}"
+  MYSQL_HOST="${HOSTPART%%:*}"
+  TAIL="${HOSTPART#*:}"
+  MYSQL_PORT="${TAIL%%/*}"
+  MYSQL_DATABASE="${TAIL#*/}"
+  MYSQL_DATABASE="${MYSQL_DATABASE%%\?*}"
+  log "dumping MySQL ${MYSQL_HOST}:${MYSQL_PORT}/${MYSQL_DATABASE} ..."
+  MYSQL_PWD="${MYSQL_PASSWORD}" mariadb-dump \
+    -h "${MYSQL_HOST}" -P "${MYSQL_PORT}" -u "${MYSQL_USER}" \
+    --single-transaction --routines --triggers \
+    "${MYSQL_DATABASE}" | gzip -9 >"${TARGET}/mysql.sql.gz"
 fi
 
 # 2) Neo4j（图数据）
@@ -41,8 +49,16 @@ else
   log "WARN: MINIO_ALIAS 或 mc 不可用，跳过对象存储"
 fi
 
-# 4) 校验清单
-find "${TARGET}" -type f -exec sha256sum {} \; >"${TARGET}/SHA256SUMS" || true
+# 文件对象存储需要把 OBJECT_STORE_PATH 所在卷同时挂载到备份任务。
+if [ "${OBJECT_STORE_BACKEND:-}" = "filesystem" ] && [ -d "${OBJECT_STORE_PATH:-}" ]; then
+  log "backing up filesystem object store ..."
+  mkdir -p "${TARGET}/originals"
+  cp -a "${OBJECT_STORE_PATH}/." "${TARGET}/originals/"
+fi
+
+# 4) 校验清单（清单本身不得参与哈希）
+find "${TARGET}" -type f ! -name SHA256SUMS -exec sha256sum {} \; \
+  >"${TARGET}/SHA256SUMS"
 log "artifacts: $(find "${TARGET}" -type f | wc -l) files"
 
 # 5) 保留期清理

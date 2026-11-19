@@ -7,6 +7,7 @@ import uuid
 _TEST_DIR = tempfile.mkdtemp(prefix="judicial-ai-tests-")
 os.environ["DATABASE_URL"] = f"sqlite:///{_TEST_DIR}/test.db"
 os.environ["DATA_DIR"] = _TEST_DIR
+os.environ["OBJECT_STORE_PATH"] = f"{_TEST_DIR}/objects"
 os.environ["ADMIN_TOKEN"] = "test-admin"
 os.environ["INFERENCE_MODE"] = "mock"
 os.environ["RATE_LIMIT_ENABLED"] = "false"
@@ -59,7 +60,23 @@ def new_tenant_app(client, admin_headers):
     app_code = f"app-{suffix}"
     response = client.post(
         "/api/v1/admin/apps",
-        json={"tenant_id": tenant_id, "code": app_code, "name": app_code},
+        json={
+            "tenant_id": tenant_id,
+            "code": app_code,
+            "name": app_code,
+            "permissions": [
+                "app:invoke",
+                "kb:read",
+                "kb:write",
+                "kb:approve",
+                "kb:promote",
+                "governance:read",
+                "governance:write",
+                "job:read",
+                "job:write",
+                "mcp:write",
+            ],
+        },
         headers=admin_headers,
     )
     assert response.status_code == 201, response.text

@@ -35,7 +35,12 @@ def test_index_job_isolation_and_idempotency(client, new_tenant_app, admin_heade
     suffix = uuid.uuid4().hex[:8]
     response = client.post(
         "/api/v1/admin/apps",
-        json={"tenant_id": tenant_id, "code": f"job-other-{suffix}", "name": "other"},
+        json={
+            "tenant_id": tenant_id,
+            "code": f"job-other-{suffix}",
+            "name": "other",
+            "permissions": ["app:invoke", "kb:read", "kb:write", "job:read", "job:write"],
+        },
         headers=admin_headers,
     )
     assert response.status_code == 201, response.text

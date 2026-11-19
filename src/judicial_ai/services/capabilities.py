@@ -302,6 +302,28 @@ def find_capability_by_model(
     return capability, version
 
 
+def parse_retrieval_scope(scope: Any) -> set[int] | None:
+    if scope is None or scope == {}:
+        return None
+    if not isinstance(scope, dict) or set(scope) != {"kb_ids"}:
+        raise ValueError("检索授权范围仅支持 kb_ids")
+    ids = scope["kb_ids"]
+    if not isinstance(ids, list):
+        raise ValueError("kb_ids 必须是正整数数组")
+    parsed: set[int] = set()
+    for item in ids:
+        if isinstance(item, bool) or not (
+            isinstance(item, int)
+            or (isinstance(item, str) and item.isascii() and item.isdecimal())
+        ):
+            raise ValueError("kb_ids 必须是正整数数组")
+        value = int(item)
+        if value <= 0:
+            raise ValueError("kb_ids 必须是正整数数组")
+        parsed.add(value)
+    return parsed
+
+
 def check_grant(
     db: Session,
     app_id: int,

@@ -1,4 +1,4 @@
-﻿(() => {
+﻿﻿(() => {
   "use strict";
 
   const $ = (selector, root = document) => root.querySelector(selector);
@@ -174,6 +174,10 @@
     appToken: safeStorage.get("jai.appToken"),
     adminConnected: false,
     appConnected: false,
+    environment: "unknown",
+    demoEnabled: false,
+    failedSources: new Set(),
+    health: null,
     capabilities: null,
     kbs: null,
     metrics: null,
@@ -183,7 +187,7 @@
     datasets: null,
     datasetVersions: new Map(),
     activeCapabilityCode: "",
-    selectedKbIds: new Set([1, 2]),
+    selectedKbIds: new Set(["1", "2"]),
     eventFilter: "",
     commandResults: [],
     commandIndex: 0,
@@ -235,6 +239,23 @@
 
   const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+  async function readApiJson(response) {
+    const text = await response.text();
+    if (!text) return null;
+    try {
+      return JSON.parse(text, (key, value, context) => {
+        if (typeof value === "number" && Number.isInteger(value) && !Number.isSafeInteger(value)) {
+          if (!context?.source) throw new Error("浏览器不支持安全读取长整数，请升级浏览器。");
+          return context.source;
+        }
+        return value;
+      });
+    } catch (error) {
+      if (error.message.includes("长整数")) throw error;
+      throw new Error("服务返回了无效的 JSON 数据。");
+    }
+  }
+
   async function api(path, options = {}) {
     const { token = state.adminToken, method = "GET", body } = options;
     const headers = { Accept: "application/json" };
@@ -246,12 +267,7 @@
       body: body === undefined ? undefined : JSON.stringify(body),
       credentials: "same-origin",
     });
-    let payload = null;
-    try {
-      payload = await response.json();
-    } catch {
-      payload = null;
-    }
+    const payload = await readApiJson(response);
     if (!response.ok) {
       const message =
         payload?.error?.message ||
@@ -299,19 +315,19 @@
   }
 
   function currentCapabilities() {
-    return state.capabilities ?? demo.capabilities;
+    return state.capabilities ?? (state.demoEnabled && !state.adminToken ? demo.capabilities : []);
   }
 
   function currentKbs() {
-    return state.kbs ?? demo.kbs;
+    return state.kbs ?? (state.demoEnabled && !state.adminToken ? demo.kbs : []);
   }
 
   function currentMetrics() {
-    return state.metrics ?? demo.metrics;
+    return state.metrics ?? (state.demoEnabled && !state.adminToken ? demo.metrics : {});
   }
 
   function currentEvents() {
-    return state.events ?? demo.events;
+    return state.events ?? (state.demoEnabled && !state.adminToken ? demo.events : []);
   }
 
   function currentApps() {
@@ -319,11 +335,19 @@
   }
 
   function currentTenants() {
-    return state.tenants ?? [{ id: 1, code: "default", name: "默认租户" }];
+    return state.tenants ?? (state.demoEnabled && !state.adminToken ? [{ id: 1, code: "default", name: "默认租户" }] : []);
   }
 
   function currentDatasets() {
     return state.datasets ?? [];
+  }
+
+  function sourceState(name) {
+    if (state.failedSources.has(name)) return "读取失败";
+    if (state[name] !== null) return "暂无数据";
+    if (!state.adminToken && !state.demoEnabled) return "未连接";
+    if (state.adminToken && state[name] === null) return "等待采集";
+    return "暂无数据";
   }
 
   function fillSelect(select, items, valueKey, labelFn, placeholder) {
@@ -365,7 +389,7 @@
     if (["ACTIVE", "PUBLISHED", "READY", "SUCCESS", "PROCESSED", "COMPLETED"].includes(value)) {
       return { label: value === "PUBLISHED" ? "已发布" : value === "READY" ? "就绪" : "运行中", className: "is-ok" };
     }
-    if (["BETA", "DRAFT", "INDEXING", "NEW", "PENDING"].includes(value)) {
+    if (["BETA", "DRAFT", "INDEXING", "NEW", "PENDING", "PENDING_APPROVAL"].includes(value)) {
       return {
         label: value === "INDEXING" ? "索引中" : value === "NEW" ? "待处理" : "试运行",
         className: "is-warn",
@@ -432,54 +456,22 @@
 
   function renderStats() {
     const metrics = currentMetrics();
-    const isDemo = !state.metrics;
+    const available = !!state.metrics || (state.demoEnabled && !state.adminToken);
     const events = metrics.events || {};
     const byType = events.by_type || {};
-    const byStatus = events.by_status || {};
-    const total = Number(events.total || 0);
-    const success = Number(byStatus.SUCCESS || 0) + Number(byStatus.PROCESSED || 0) + Number(byStatus.COMPLETED || 0);
-    const failed = Number(byStatus.FAILED || 0) + Number(byStatus.ERROR || 0) + Number(byStatus.DEAD || 0);
-    const attempts = success + failed;
-    const successRate = attempts ? clamp((success / attempts) * 100, 0, 100) : isDemo ? 99.2 : 0;
-    const feedbackRate = Number(metrics.feedback?.positive_rate || 0);
-    const qualityScore = Number(metrics.datasets?.avg_quality_score || 0) * 100;
-
-    $("#statCalls").textContent = formatNumber(isDemo ? 12847 : total);
-    $("#statFeedback").textContent = isDemo ? "91.4" : (feedbackRate * 100).toFixed(1);
-    $("#statFeedbackSub").textContent = isDemo
-      ? "1,996 / 2,184"
-      : `${formatNumber(metrics.feedback?.positive || 0)} / ${formatNumber(metrics.feedback?.total || 0)}`;
-    $("#statQuality").textContent = isDemo ? "91.0" : qualityScore.toFixed(1);
-    $("#statQualitySub").textContent = isDemo
-      ? "5,602 条数据"
-      : `${formatNumber(metrics.datasets?.items || 0)} 条数据`;
-
-    $("#availabilityValue").innerHTML = `${successRate.toFixed(1)}<span>%</span>`;
-    $("#pulseGauge").style.setProperty("--value", successRate.toFixed(1));
-    $("#pulseInference").textContent = formatNumber(isDemo ? 6230 : byType.MODEL_INFERENCE || byType.INFERENCE_COMPLETED || 0);
-    $("#pulseRetrieval").textContent = formatNumber(isDemo ? 4318 : byType.RETRIEVAL_COMPLETED || 0);
-    $("#pulseTools").textContent = formatNumber(isDemo ? 1620 : byType.MCP_TOOL_CALL || 0);
-
-    const processedRate = total
-      ? clamp(((total - Number(byStatus.NEW || 0)) / total) * 100, 0, 100)
-      : isDemo
-        ? 98.7
-        : 0;
-    const agreement = isDemo ? 91.4 : Number(metrics.annotations?.agreement_rate || 0) * 100;
-    const closeRate = isDemo ? 78 : Number(metrics.bad_cases?.close_rate || 0) * 100;
-    const healthScore = Math.round((processedRate + agreement + closeRate) / 3);
-
-    $("#healthEvents").textContent = `${processedRate.toFixed(1)}%`;
-    $("#healthAgreement").textContent = `${agreement.toFixed(1)}%`;
-    $("#healthCases").textContent = `${closeRate.toFixed(1)}%`;
-    $("#healthScore").textContent = String(healthScore);
-    const healthRing = $(".health-card .score-ring");
-    if (healthRing) healthRing.style.setProperty("--score", healthScore);
-
-    const healthMeters = $$(".health-card .micro-meter i");
-    if (healthMeters[0]) healthMeters[0].style.width = `${processedRate.toFixed(1)}%`;
-    if (healthMeters[1]) healthMeters[1].style.width = `${agreement.toFixed(1)}%`;
-    if (healthMeters[2]) healthMeters[2].style.width = `${closeRate.toFixed(1)}%`;
+    const feedback = metrics.feedback || {};
+    const datasets = metrics.datasets || {};
+    $("#statCalls").textContent = available ? formatNumber(events.total ?? 0) : "—";
+    $("#statFeedback").textContent = available && feedback.total
+      ? (Number(feedback.positive_rate) * 100).toFixed(1) : "—";
+    $("#statFeedbackSub").textContent = available
+      ? `${formatNumber(feedback.positive ?? 0)} / ${formatNumber(feedback.total ?? 0)}` : "未采集";
+    $("#statQuality").textContent = available && datasets.items
+      ? (Number(datasets.avg_quality_score) * 100).toFixed(1) : "—";
+    $("#statQualitySub").textContent = available ? `${formatNumber(datasets.items ?? 0)} 条数据` : "未采集";
+    $("#pulseInference").textContent = available ? formatNumber((byType.MODEL_INFERENCE || 0) + (byType.INFERENCE_COMPLETED || 0)) : "—";
+    $("#pulseRetrieval").textContent = available ? formatNumber(byType.RETRIEVAL_COMPLETED || 0) : "—";
+    $("#pulseTools").textContent = available ? formatNumber((byType.MCP_TOOL_CALL || 0) + (byType.TOOL_CALLED || 0)) : "—";
   }
 
   function renderCapabilityStrip() {
@@ -487,7 +479,7 @@
     if (!container) return;
     const items = currentCapabilities().slice(0, 4);
     if (!items.length) {
-      container.innerHTML = `<div class="empty-state"><strong>暂无能力</strong><span>在管理接口注册能力后会显示在这里。</span></div>`;
+      container.innerHTML = `<div class="empty-state"><strong>${sourceState("capabilities")}</strong></div>`;
       return;
     }
     container.innerHTML = items
@@ -531,13 +523,17 @@
       .join("");
 
     $("#capabilityEmpty").hidden = items.length > 0;
+    $("#capabilityEmpty strong").textContent = state.capabilities === null && !state.demoEnabled
+      ? sourceState("capabilities") : state.failedSources.has("capabilities")
+        ? "读取失败" : "没有匹配的能力";
     $("#capabilityCount").textContent = `${items.length} 项能力`;
-    $("#capTotal").textContent = String(allItems.length);
+    $("#capTotal").textContent = state.capabilities !== null || (state.demoEnabled && !state.adminToken) ? String(allItems.length) : "—";
     $("#capActive").textContent = String(
       allItems.filter((item) =>
         ["ACTIVE", "PUBLISHED"].includes(String(item.status).toUpperCase()),
       ).length,
     );
+    if ($("#capTotal").textContent === "—") $("#capActive").textContent = "—";
   }
 
   function securityLabel(level) {
@@ -558,15 +554,16 @@
     const chips = $("#kbChips");
     if (!list || !chips) return;
 
-    const validIds = new Set(kbs.map((item) => Number(item.id)));
+    const validIds = new Set(kbs.map((item) => String(item.id)));
     const selected = [...state.selectedKbIds].filter((id) => validIds.has(id));
+    state.selectedKbIds = new Set(selected);
     if (!selected.length && kbs.length) {
-      state.selectedKbIds = new Set(kbs.slice(0, 2).map((item) => Number(item.id)));
+      state.selectedKbIds = new Set(kbs.slice(0, 2).map((item) => String(item.id)));
     }
 
-    $("#kbCount").textContent = String(kbs.length);
+    $("#kbCount").textContent = state.kbs !== null || (state.demoEnabled && !state.adminToken) ? String(kbs.length) : "—";
     if (!kbs.length) {
-      list.innerHTML = `<div class="empty-state"><strong>暂无知识库</strong><span>创建知识库并完成索引后会显示在这里。</span></div>`;
+      list.innerHTML = `<div class="empty-state"><strong>${sourceState("kbs")}</strong></div>`;
       chips.innerHTML = "";
       return;
     }
@@ -591,7 +588,7 @@
     chips.innerHTML = kbs
       .map(
         (item) =>
-          `<button class="chip ${state.selectedKbIds.has(Number(item.id)) ? "is-selected" : ""}" type="button" data-kb-id="${escapeHtml(item.id)}"><i></i>${escapeHtml(item.name)}</button>`,
+          `<button class="chip ${state.selectedKbIds.has(String(item.id)) ? "is-selected" : ""}" type="button" data-kb-id="${escapeHtml(item.id)}"><i></i>${escapeHtml(item.name)}</button>`,
       )
       .join("");
   }
@@ -611,7 +608,7 @@
     const events = currentEvents().slice(0, 4);
     list.innerHTML = events.length
       ? events.map(eventRow).join("")
-      : `<div class="empty-state"><strong>暂无事件</strong><span>平台调用后，事件流会实时显示在这里。</span></div>`;
+      : `<div class="empty-state"><strong>${sourceState("events")}</strong></div>`;
   }
 
   function renderGovernance() {
@@ -621,14 +618,15 @@
     const badCases = metrics.bad_cases || {};
     const annotations = metrics.annotations || {};
     const datasets = metrics.datasets || {};
+    const available = !!state.metrics || (state.demoEnabled && !state.adminToken);
 
-    $("#govEvents").textContent = formatNumber(events.total || 0);
-    $("#govFeedback").textContent = formatPercent(feedback.positive_rate || 0);
-    $("#govAgreement").textContent = formatPercent(annotations.agreement_rate || 0);
-    $("#govCases").textContent = formatPercent(badCases.close_rate || 0);
+    $("#govEvents").textContent = available ? formatNumber(events.total ?? 0) : "—";
+    $("#govFeedback").textContent = available && feedback.total ? formatPercent(feedback.positive_rate) : "—";
+    $("#govAgreement").textContent = available && annotations.records ? formatPercent(annotations.agreement_rate) : "—";
+    $("#govCases").textContent = available && badCases.total ? formatPercent(badCases.close_rate) : "—";
 
-    $("#qualityTotal").textContent = formatNumber(datasets.items || 0);
-    $("#feedbackRate").textContent = ((Number(feedback.positive_rate) || 0) * 100).toFixed(1);
+    $("#qualityTotal").textContent = available ? formatNumber(datasets.items ?? 0) : "—";
+    $("#feedbackRate").textContent = available && feedback.total ? (Number(feedback.positive_rate) * 100).toFixed(1) : "—";
 
     const review = datasets.review_status || {};
     const bars = $$(".quality-bars > div");
@@ -645,7 +643,7 @@
       const fill = bar.querySelector("i");
       if (fill) fill.style.width = `${width}%`;
       const count = bar.querySelector("strong");
-      if (count) count.textContent = formatNumber(item.value);
+      if (count) count.textContent = available ? formatNumber(item.value) : "—";
     });
 
     const feedbackBars = $$(".feedback-bars > div");
@@ -653,13 +651,13 @@
       const positive = Number(feedback.positive || 0);
       const total = Number(feedback.total || 0);
       feedbackBars[0].querySelector("i").style.width = `${total ? (positive / total) * 100 : 0}%`;
-      feedbackBars[0].querySelector("strong").textContent = formatNumber(positive);
+      feedbackBars[0].querySelector("strong").textContent = available ? formatNumber(positive) : "—";
     }
     if (feedbackBars[1]) {
       const negative = Math.max(0, Number(feedback.total || 0) - Number(feedback.positive || 0));
       const total = Number(feedback.total || 0);
       feedbackBars[1].querySelector("i").style.width = `${total ? (negative / total) * 100 : 0}%`;
-      feedbackBars[1].querySelector("strong").textContent = formatNumber(negative);
+      feedbackBars[1].querySelector("strong").textContent = available ? formatNumber(negative) : "—";
     }
 
     renderGovernanceEvents();
@@ -688,7 +686,7 @@
     container.innerHTML =
       head +
       (rows ||
-        `<div class="empty-state"><svg><use href="#i-activity"></use></svg><strong>暂无事件</strong><span>当前筛选条件下没有事件记录。</span></div>`);
+        `<div class="empty-state"><svg><use href="#i-activity"></use></svg><strong>${sourceState("events")}</strong></div>`);
   }
 
   function maskToken(token) {
@@ -701,19 +699,53 @@
     const pill = $(".connection-pill");
     const label = $("#connectionLabel");
     const connected = state.adminConnected || state.appConnected;
-    pill.classList.toggle("is-connected", connected);
-    if (state.adminConnected) label.textContent = "已连接";
+    pill.classList.toggle("is-connected", connected && !state.failedSources.size);
+    if (state.adminConnected) label.textContent = state.failedSources.size ? "部分数据读取失败" : "已连接";
+    else if (state.adminToken && state.failedSources.size) label.textContent = "数据读取失败";
     else if (state.appConnected) label.textContent = "应用已连接";
-    else label.textContent = "示例数据";
+    else label.textContent = state.demoEnabled ? "示例数据" : "未连接";
 
     const status = $("#connectionStatus");
     if (status) {
-      status.textContent = state.adminConnected ? "已连接" : state.appConnected ? "应用已连接" : "示例数据";
-      status.className = `status-pill ${state.adminConnected || state.appConnected ? "is-ok" : "is-warn"}`;
+      status.textContent = state.adminConnected
+        ? state.failedSources.size ? "部分数据读取失败" : "已连接"
+        : state.adminToken && state.failedSources.size
+          ? "数据读取失败"
+        : state.appConnected
+          ? "应用已连接"
+          : state.demoEnabled
+            ? "示例数据"
+            : "未连接";
+      status.className = `status-pill ${connected && !state.failedSources.size ? "is-ok" : "is-warn"}`;
     }
     $("#adminTokenState").textContent = maskToken(state.adminToken);
     $("#appTokenState").textContent = maskToken(state.appToken);
     $("#settingsBaseUrl").textContent = window.location.origin;
+    $("#runtimeEnvironment").textContent = state.environment === "unknown" ? "未知" : state.environment;
+    $("#dashboardStatus").textContent = !state.adminToken && state.demoEnabled
+      ? "示例数据（非实时）" : state.failedSources.size
+        ? `数据读取失败：${[...state.failedSources].join("、")}`
+        : state.adminConnected ? "实时数据" : "未连接";
+  }
+
+  async function probeHealth() {
+    try {
+      const response = await fetch("/readyz", { headers: { Accept: "application/json" } });
+      const payload = await response.json();
+      if (![200, 503].includes(response.status) || !payload.components ||
+          !["ready", "not_ready"].includes(payload.status)) throw new Error("invalid response");
+      const errors = Object.entries(payload.components)
+        .filter(([, value]) => value?.status === "error").map(([name]) => name);
+      const mockInference = payload.components.inference?.backend === "mock";
+      state.health = payload.status === "not_ready" ? "not_ready" : errors.length || mockInference ? "degraded" : "ready";
+      $("#healthLabel").textContent = state.health === "ready" ? "就绪探测通过" : state.health === "not_ready" ? "服务未就绪" : errors.length ? "依赖异常（非关键）" : "模拟模型";
+      $("#healthDetail").textContent = errors.length ? `异常依赖：${errors.join("、")}` : mockInference ? "未连接真实模型服务" : "仅反映已配置的就绪探测";
+    } catch {
+      state.health = "unknown";
+      $("#healthLabel").textContent = "健康探测失败";
+      $("#healthDetail").textContent = "无法读取就绪状态";
+    }
+    $("#healthDot").className = `status-dot ${state.health === "ready" ? "is-ok" : "is-warn"}`;
   }
 
   function updateManagementSelects() {
@@ -855,6 +887,16 @@
     ]);
     const [capabilities, kbs, metrics, events, apps, tenants, datasets] = tasks;
     let successCount = 0;
+    const names = ["capabilities", "kbs", "metrics", "events", "apps", "tenants", "datasets"];
+    tasks.forEach((task, index) => {
+      const name = names[index];
+      if (task.status === "rejected") {
+        state.failedSources.add(name);
+        state[name] = null;
+      } else {
+        state.failedSources.delete(name);
+      }
+    });
 
     if (capabilities.status === "fulfilled") {
       state.capabilities = capabilities.value?.data?.items || [];
@@ -892,11 +934,13 @@
         error.status = first.reason.status;
         throw error;
       }
-      if (!silent) toast("未能读取平台数据，已保留示例视图");
+      if (!silent) {
+        toast("未能读取平台数据");
+      }
     }
     state.adminConnected = successCount > 0;
     renderAll();
-    if (!silent && successCount) toast("平台数据已更新");
+    if (!silent && successCount) toast(state.failedSources.size ? "部分数据读取失败" : "平台数据已更新");
   }
 
   async function connect(event) {
@@ -915,17 +959,21 @@
     try {
       let adminValid = false;
       let appValid = false;
+      let appKbs = null;
       if (admin) {
         await api("/api/v1/admin/capabilities", { token: admin });
         adminValid = true;
       }
       if (app) {
-        await api("/api/v1/kbs", { token: app });
+        const result = await api("/api/v1/kbs", { token: app });
+        appKbs = result?.data?.items || [];
         appValid = true;
       }
 
       state.adminToken = adminValid ? admin : "";
       state.appToken = appValid ? app : "";
+      state.failedSources.clear();
+      $("#retrievalResults").hidden = true;
       state.adminConnected = adminValid;
       state.appConnected = appValid;
       safeStorage.set("jai.adminToken", state.adminToken);
@@ -935,7 +983,7 @@
         await hydrateDashboard({ silent: true });
       } else {
         state.capabilities = null;
-        state.kbs = null;
+        state.kbs = appKbs;
         state.metrics = null;
         state.events = null;
         state.apps = null;
@@ -966,13 +1014,15 @@
     state.apps = null;
     state.tenants = null;
     state.datasets = null;
+    state.failedSources.clear();
     state.datasetVersions.clear();
     safeStorage.set("jai.adminToken", "");
     safeStorage.set("jai.appToken", "");
     $("#adminTokenInput").value = "";
     $("#appTokenInput").value = "";
+    $("#retrievalResults").hidden = true;
     renderAll();
-    toast("已断开连接，当前为示例数据。");
+    toast(state.demoEnabled ? "已断开连接，当前为示例数据。" : "已断开连接。");
   }
 
   function restoreSession() {
@@ -991,8 +1041,9 @@
     if (app) {
       jobs.push(
         api("/api/v1/kbs", { token: app })
-          .then(() => {
+          .then((result) => {
             state.appConnected = true;
+            if (!state.adminToken) state.kbs = result?.data?.items || [];
           })
           .catch(() => {
             state.appToken = "";
@@ -1009,12 +1060,12 @@
   async function refreshCapabilities() {
     if (!state.adminToken) {
       renderAll();
-      toast("当前为示例数据。连接管理令牌后可读取实时能力。");
+      toast(state.demoEnabled ? "当前为示例数据。连接管理令牌后可读取实时能力。" : "连接管理令牌后可读取能力数据。");
       return;
     }
     try {
       await hydrateDashboard({ silent: true });
-      toast("能力数据已刷新。");
+      toast(state.failedSources.has("capabilities") ? "能力数据读取失败。" : "能力数据已刷新。");
     } catch (error) {
       toast(error.message || "刷新失败。");
     }
@@ -1023,12 +1074,12 @@
   async function refreshGovernance() {
     if (!state.adminToken) {
       renderAll();
-      toast("当前为示例数据。连接管理令牌后可读取实时治理数据。");
+      toast(state.demoEnabled ? "当前为示例数据。连接管理令牌后可读取实时治理数据。" : "连接管理令牌后可读取治理数据。");
       return;
     }
     try {
       await hydrateDashboard({ silent: true });
-      toast("治理态势已刷新。");
+      toast(state.failedSources.has("metrics") || state.failedSources.has("events") ? "治理数据读取失败。" : "治理态势已刷新。");
     } catch (error) {
       toast(error.message || "刷新失败。");
     }
@@ -1103,13 +1154,9 @@
     const usage = payload?.usage || {};
     const container = $("#retrievalResults");
     if (!container) return;
+    container.hidden = false;
 
     const savings = compression.ratio ? Math.round((1 - Number(compression.ratio)) * 100) : 0;
-    $("#retrievalMeta").innerHTML = [
-      `<span>${results.length} 条证据</span>`,
-      `<span>耗时 ${formatNumber(usage.total_ms || 0)}ms</span>`,
-      compression.enabled ? `<span>压缩 ${savings}%</span>` : `<span>未压缩</span>`,
-    ].join("<i></i>");
 
     if (!results.length) {
       container.innerHTML = `<div class="results-head"><div><span class="card-kicker">RESULTS</span><h2>证据预览</h2></div></div><div class="empty-state"><svg><use href="#i-search"></use></svg><strong>没有召回结果</strong><span>尝试调整问题、知识库或 Top K。</span></div>`;
@@ -1127,21 +1174,27 @@
         return `<article class="result-item">
           <div class="result-index">${String(index + 1).padStart(2, "0")}</div>
           <div class="result-main">
-            <div class="result-title"><strong>${escapeHtml(title)}</strong><span class="badge ${index === 0 ? "badge-gold" : "badge-soft"}">${index === 0 ? "高相关" : "证据"}</span></div>
+          <div class="result-title"><strong>${escapeHtml(title)}</strong><span class="badge badge-soft">检索结果</span></div>
             <p>${escapeHtml(truncate(item.text || citation.snippet || "", 280))}</p>
-            <div class="result-foot"><span>${escapeHtml(source)}</span><i></i><span>相关度 ${score.toFixed(3)}</span></div>
+            <div class="result-foot"><span>${escapeHtml(source)}</span><i></i><span>排序分 ${score.toFixed(3)}</span></div>
           </div>
           <button class="icon-btn result-link" type="button" aria-label="复制引用" data-copy="${escapeHtml(`${title}${docNo ? ` ${docNo}` : ""}`)}"><svg><use href="#i-copy"></use></svg></button>
         </article>`;
       })
       .join("");
 
-    const integrity = compression.citation_integrity !== false;
+    const citationStatus = String(payload?.citation?.status || "UNKNOWN");
+    const citationLabel = {
+      VERIFIED: "引用定位校验通过，相关性及法律适用仍需人工核验",
+      DEGRADED: "引用定位降级，需人工核验",
+      INVALID: "引用定位无效，需人工核验",
+      NONE: "无引用",
+    }[citationStatus] || "引用状态未知，需人工核验";
     container.innerHTML = `
       <div class="results-head"><div><span class="card-kicker">RESULTS</span><h2>证据预览</h2></div><div class="result-meta" id="retrievalMeta"></div></div>
       <div class="result-list">${items}</div>
       <div class="results-foot">
-        <span><svg><use href="#${integrity ? "i-check" : "i-alert"}"></use></svg>${integrity ? "引用完整性校验通过" : "引用校验未通过，已回退原文"}</span>
+        <span><svg><use href="#${citationStatus === "VERIFIED" ? "i-check" : "i-alert"}"></use></svg>${escapeHtml(citationLabel)}</span>
         <span>决策意图：${escapeHtml(intentLabel(decision.intent))} · 置信度 ${Number(decision.confidence || 0).toFixed(2)}</span>
       </div>`;
     $("#retrievalMeta").innerHTML = [
@@ -1173,9 +1226,8 @@
     button.textContent = "检索中…";
     try {
       if (!state.appToken) {
-        await sleep(420);
-        toast("当前为预览结果。连接应用令牌后可调用真实检索接口。");
-        $("#retrievalMeta").innerHTML = `<span>3 条证据</span><i></i><span>耗时 312ms</span><i></i><span>压缩 41%</span>`;
+        $("#retrievalResults").hidden = true;
+        toast("请先连接应用令牌。");
         return;
       }
       const payload = await api("/v1/retrieve", {
@@ -1192,6 +1244,7 @@
       renderRetrievalResults(payload);
       toast("检索完成，引用与压缩信息已更新。");
     } catch (error) {
+      $("#retrievalResults").hidden = true;
       toast(error.message || "检索失败，请检查应用令牌与知识库状态。");
     } finally {
       button.disabled = false;
@@ -1311,12 +1364,7 @@
       body: formData,
       credentials: "same-origin",
     });
-    let payload = null;
-    try {
-      payload = await response.json();
-    } catch {
-      payload = null;
-    }
+    const payload = await readApiJson(response);
     if (!response.ok) {
       throw new Error(
         payload?.error?.message || payload?.detail || `请求失败（HTTP ${response.status}）`,
@@ -1455,7 +1503,7 @@
       toast("授权操作需要管理令牌。");
       return;
     }
-    const appId = Number($("#grantApp").value);
+    const appId = $("#grantApp").value;
     if (!appId) {
       setFormError("grantError", "请选择要授权的应用。");
       return;
@@ -1466,10 +1514,12 @@
     button.textContent = "授权中…";
     setFormError("grantError", "");
     try {
-      const kbIds = $("#grantKbIds")
-        .value.split(",")
-        .map((item) => Number(item.trim()))
-        .filter((item) => Number.isFinite(item) && item > 0);
+      const scopeInput = $("#grantKbIds").value.trim();
+      const kbIds = scopeInput ? scopeInput.split(",").map((item) => item.trim()) : [];
+      if (kbIds.some((item) => !/^[1-9]\d*$/.test(item))) {
+        setFormError("grantError", "知识库 ID 必须是以逗号分隔的正整数。");
+        return;
+      }
       const qps = Number($("#grantQps").value);
       await api(`/api/v1/admin/capabilities/${encodeURIComponent(code)}/grants`, {
         token,
@@ -1509,6 +1559,44 @@
     }
   }
 
+  function openTenantCreate() {
+    $("#tenantCreateForm").reset();
+    setFormError("tenantCreateError", "");
+    openDialog("tenantCreateDialog");
+  }
+
+  async function submitTenant(event) {
+    event.preventDefault();
+    if (!state.adminToken) {
+      setFormError("tenantCreateError", "请先连接平台并配置管理令牌。");
+      return;
+    }
+    const button = $("#tenantCreateSubmit");
+    const original = button.textContent;
+    button.disabled = true;
+    button.textContent = "创建中…";
+    setFormError("tenantCreateError", "");
+    try {
+      await api("/api/v1/admin/tenants", {
+        method: "POST",
+        body: {
+          code: $("#tenantCode").value.trim(),
+          name: $("#tenantName").value.trim(),
+          type: $("#tenantType").value,
+          contact: $("#tenantContact").value.trim() || null,
+        },
+      });
+      closeDialog("tenantCreateDialog");
+      await hydrateDashboard({ silent: true });
+      toast("租户已创建。");
+    } catch (error) {
+      setFormError("tenantCreateError", error.message || "创建租户失败。");
+    } finally {
+      button.disabled = false;
+      button.textContent = original;
+    }
+  }
+
   function openKbCreate() {
     $("#kbCreateForm").reset();
     $("#kbOwner").value = "ai-platform";
@@ -1526,7 +1614,7 @@
       toast("请先连接平台。");
       return;
     }
-    const tenantId = Number($("#kbTenant").value);
+    const tenantId = $("#kbTenant").value;
     if (!tenantId) {
       setFormError("kbCreateError", "请选择所属租户。");
       return;
@@ -1583,7 +1671,7 @@
       toast("请先连接平台。");
       return;
     }
-    const kbId = Number($("#documentKb").value);
+    const kbId = $("#documentKb").value;
     if (!kbId) {
       setFormError("documentError", "请选择目标知识库。");
       return;
@@ -1620,22 +1708,37 @@
           },
         });
       }
-      if ($("#documentIndex").checked) {
-        const job = await api(`/api/v1/kbs/${kbId}/index-jobs`, {
-          token,
-          method: "POST",
-        });
-        const status = job?.data?.status;
-        toast(
-          status === "PENDING"
-            ? "文档已入库，索引任务已排队。"
-            : "文档已入库并完成索引。",
-        );
-      } else {
-        toast("文档已入库，尚未构建索引。");
+      let indexMessage = "文档已入库，未提交索引任务。";
+      const automaticJobId = result?.data?.index_job_id;
+      try {
+        let job = null;
+        if (automaticJobId) {
+          job = await api(`/api/v1/jobs/${encodeURIComponent(automaticJobId)}`, { token });
+        } else if ($("#documentIndex").checked) {
+          job = await api(`/api/v1/kbs/${kbId}/index-jobs`, { token, method: "POST" });
+        }
+        if (job) {
+          const status = job.data?.status;
+          const indexStatus = job.data?.result?.index?.status || job.data?.index?.status;
+          if (status === "SUCCEEDED") {
+            indexMessage = indexStatus === "PENDING_APPROVAL"
+              ? "文档已入库，索引等待审批。" : "文档已入库，索引任务已完成。";
+          } else if (["PENDING", "RUNNING"].includes(status)) {
+            indexMessage = job.data?.error
+              ? "文档已入库，索引最近一次执行失败，请检查任务。"
+              : "文档已入库，索引任务尚未完成。";
+          } else if (["FAILED", "DEAD", "CANCELLED"].includes(status)) {
+            indexMessage = "文档已入库，但索引任务失败或已取消，请检查任务。";
+          } else {
+            indexMessage = "文档已入库，索引任务状态未知，请检查任务。";
+          }
+        }
+      } catch {
+        indexMessage = "文档已入库，但无法确认索引状态，请检查任务。";
       }
       closeDialog("documentDialog");
       await hydrateDashboard({ silent: true });
+      toast(indexMessage);
     } catch (error) {
       setFormError("documentError", error.message || "文档入库失败。");
     } finally {
@@ -1645,7 +1748,7 @@
   }
 
   async function loadEvalVersions() {
-    const datasetId = Number($("#evalDataset").value);
+    const datasetId = $("#evalDataset").value;
     const select = $("#evalDatasetVersion");
     if (!datasetId) {
       select.innerHTML = `<option value="">请选择数据集</option>`;
@@ -1702,7 +1805,7 @@
         token,
         method: "POST",
         body: {
-          dataset_version_id: Number($("#evalDatasetVersion").value),
+          dataset_version_id: $("#evalDatasetVersion").value,
           target_type: $("#evalTargetType").value,
           target_version: $("#evalTargetVersion").value.trim(),
           config: {
@@ -1797,7 +1900,7 @@
         body: {
           target: $("#retentionTarget").value,
           before: before ? new Date(before).toISOString() : null,
-          tenant_id: Number($("#retentionTenant").value),
+          tenant_id: $("#retentionTenant").value,
           dry_run: $("#retentionDryRun").checked,
         },
       });
@@ -1857,6 +1960,10 @@
       }
       if (event.target.closest("[data-open-capability-create]")) {
         openCapabilityCreate();
+        return;
+      }
+      if (event.target.closest("[data-open-tenant-create]")) {
+        openTenantCreate();
         return;
       }
       if (event.target.closest("[data-open-kb-create]")) {
@@ -1937,7 +2044,7 @@
 
       const chip = event.target.closest("[data-kb-id]");
       if (chip) {
-        const id = Number(chip.dataset.kbId);
+        const id = chip.dataset.kbId;
         if (state.selectedKbIds.has(id)) state.selectedKbIds.delete(id);
         else state.selectedKbIds.add(id);
         chip.classList.toggle("is-selected", state.selectedKbIds.has(id));
@@ -1988,6 +2095,7 @@
     $("#capabilityType").addEventListener("change", renderCapabilityTable);
     $("#capabilityCreateForm").addEventListener("submit", submitCapability);
     $("#grantForm").addEventListener("submit", submitGrant);
+    $("#tenantCreateForm").addEventListener("submit", submitTenant);
     $("#kbCreateForm").addEventListener("submit", submitKb);
     $("#documentForm").addEventListener("submit", submitDocument);
     $("#evalForm").addEventListener("submit", submitEval);
@@ -2036,7 +2144,19 @@
     window.setInterval(tick, 1000);
   }
 
-  function init() {
+  async function loadRuntimeMode() {
+    try {
+      const response = await fetch("/version", { headers: { Accept: "application/json" } });
+      const payload = response.ok ? await response.json() : {};
+      state.environment = String(payload.environment || "unknown").toLowerCase();
+      state.demoEnabled = payload.demo_mode === true;
+    } catch {
+      state.environment = "unknown";
+      state.demoEnabled = false;
+    }
+  }
+
+  async function init() {
     let storedTheme = "";
     try {
       storedTheme = localStorage.getItem("jai.theme") || "";
@@ -2046,11 +2166,15 @@
     const preferred = window.matchMedia?.("(prefers-color-scheme: dark)").matches ? "dark" : "light";
     setTheme(storedTheme || preferred);
 
-    renderSparks();
     renderAll();
     startClock();
     bindEvents();
     navigate(routeFromHash(), { scroll: false });
+    document.body.classList.remove("initializing");
+    await loadRuntimeMode();
+    renderAll();
+    probeHealth();
+    window.setInterval(probeHealth, 60000);
     restoreSession();
   }
 

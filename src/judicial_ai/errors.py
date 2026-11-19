@@ -9,6 +9,18 @@ from fastapi.responses import JSONResponse
 
 logger = logging.getLogger("judicial_ai.errors")
 
+_EXCEPTION_NAME_LIMIT = 64
+
+
+def sanitize_exception_summary(exc: BaseException) -> str:
+    """只暴露异常类型名，禁止把异常正文写入对外响应体。
+
+    异常正文可能包含连接串、内网主机名、凭据片段等；完整堆栈只应进服务端
+    日志。
+    """
+    name = type(exc).__name__ or "UnknownError"
+    return name[:_EXCEPTION_NAME_LIMIT]
+
 
 class ApiError(Exception):
     def __init__(
@@ -49,6 +61,21 @@ async def api_error_handler(request: Request, exc: ApiError) -> JSONResponse:
     )
 
 
+def _json_safe(value: Any) -> Any:
+    """把 pydantic 错误明细转成可 JSON 序列化结构。
+
+    `ctx` 里可能带原始 `ValueError` 实例，直接塞进 JSONResponse 会 500。
+    """
+
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, dict):
+        return {str(key): _json_safe(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_json_safe(item) for item in value]
+    return str(value)
+
+
 async def validation_error_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
     return JSONResponse(
         status_code=400,
@@ -59,7 +86,7 @@ async def validation_error_handler(request: Request, exc: RequestValidationError
                 "type": "client_error",
                 "request_id": _request_id(request),
                 "trace_id": _trace_id(request),
-                "details": {"errors": exc.errors()},
+                "details": {"errors": _json_safe(exc.errors())},
             }
         },
     )

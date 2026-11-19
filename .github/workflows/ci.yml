@@ -27,7 +27,12 @@ jobs:
       - name: Typecheck
         run: uv run mypy src
       - name: Test
-        run: uv run python -m pytest --cov=judicial_ai --cov-report=term-missing --cov-report=xml
+        run: >-
+          uv run python -m pytest
+          --cov=judicial_ai
+          --cov-report=term-missing
+          --cov-report=xml
+          --cov-fail-under=75
       - name: Upload coverage
         uses: actions/upload-artifact@v7.0.2
         with:
@@ -44,6 +49,8 @@ jobs:
     needs: quality
     steps:
       - uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 0
       - name: Build image
         run: docker build -t judicial-ai-platform:ci .
       - name: Trivy scan
@@ -51,11 +58,47 @@ jobs:
           docker run --rm
           -v /var/run/docker.sock:/var/run/docker.sock
           aquasec/trivy:0.76.1 image
-          --exit-code 0
+          --exit-code 1
           --ignore-unfixed
           --severity HIGH,CRITICAL
           judicial-ai-platform:ci
+      - name: Generate Trivy SARIF
+        if: always()
+        run: >-
+          docker run --rm
+          -v /var/run/docker.sock:/var/run/docker.sock
+          -v "${{ github.workspace }}:/workspace"
+          aquasec/trivy:0.76.1 image
+          --exit-code 0
+          --format sarif
+          --output /workspace/trivy-results.sarif
+          --severity HIGH,CRITICAL
+          judicial-ai-platform:ci
+      - name: Generate SBOM
+        if: always()
+        run: >-
+          docker run --rm
+          -v /var/run/docker.sock:/var/run/docker.sock
+          -v "${{ github.workspace }}:/workspace"
+          aquasec/trivy:0.76.1 image
+          --format cyclonedx
+          --output /workspace/sbom.cdx.json
+          judicial-ai-platform:ci
+      - name: Upload Trivy SARIF
+        if: always() && hashFiles('trivy-results.sarif') != ''
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: trivy-results.sarif
+      - name: Upload security artifacts
+        if: always()
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: security-artifacts
+          path: |
+            trivy-results.sarif
+            sbom.cdx.json
       - name: Gitleaks
+        if: always()
         uses: gitleaks/gitleaks-action@v3.0.0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

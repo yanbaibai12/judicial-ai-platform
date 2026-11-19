@@ -6,6 +6,7 @@
 - Kustomize 5+
 - ingress-nginx、Prometheus Operator（可选）
 - 外部 MySQL、Redis、Milvus、Neo4j、vLLM（生产不建议与应用同 Pod）
+- 支持 `ReadWriteMany` 的存储类或已绑定 NAS PV，用于原件归档 PVC
 
 ## 步骤
 
@@ -39,8 +40,9 @@ curl -fsS http://127.0.0.1:8080/metrics | head
 
 - `AUTO_CREATE_SCHEMA=false`，必须先执行 migration Job。
 - 生产镜像使用非 root、只读根文件系统；需要写入的 `/tmp` 使用 emptyDir。
+- `judicial-ai-original-documents` 必须绑定可被 API、Worker 和备份任务共同挂载的 RWX 卷。
 - Worker 当前默认单副本；扩容时需为每个 Pod 设置唯一 `NODE_ID`。
-- 备份 CronJob 需要 `DATABASE_URL`/`REDIS_URL` 与备份 PVC；Neo4j、Milvus 需按实际集群配置 `NEO4J_BACKUP_CMD`/`MINIO_ALIAS`。
+- 备份 CronJob 使用 `mariadb-dump` 备份 MySQL，并复制原件卷；Neo4j、Milvus 需按实际集群配置 `NEO4J_BACKUP_CMD`/`MINIO_ALIAS`。
 - 定期执行恢复演练并记录 RTO/RPO。
 
 ## 可观测性

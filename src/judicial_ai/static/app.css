@@ -4526,3 +4526,18 @@ kbd {
     grid-column: auto;
   }
 }
+[hidden] { display: none !important; }
+.initializing .app-shell { visibility: hidden; }
+
+/* These panels have no live data source and must not imply operational status. */
+.sidebar-card, .workspace, .hero-panel .pulse-gauge, .hero-panel-foot,
+.stat-grid .stat-card:nth-child(2), .trend, .spark,
+.stat-card:nth-child(4) .stat-foot span:nth-child(2),
+.chain-card, .health-card, .health-insight,
+.mini-stats > div:nth-child(n+3), .compression-side,
+.metric-foot, .quality-panel .badge, .quality-score-row .score-ring,
+.quality-score-row small, .quality-note, .feedback-score small,
+.governance-grid .card-foot > span, .retention-list,
+.governance-grid .card:has(.retention-list),
+.settings-grid .settings-card:not(.connection-card), .callout-card,
+.page-foot, .heading-actions .badge-soft { display: none !important; }

@@ -55,6 +55,8 @@ spec:
           volumeMounts:
             - name: tmp
               mountPath: /tmp
+            - name: original-documents
+              mountPath: /data/objects
           readinessProbe:
             exec:
               command:
@@ -76,3 +78,6 @@ spec:
       volumes:
         - name: tmp
           emptyDir: {}
+        - name: original-documents
+          persistentVolumeClaim:
+            claimName: judicial-ai-original-documents

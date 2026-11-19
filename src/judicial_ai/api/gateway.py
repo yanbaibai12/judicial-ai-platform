@@ -7,6 +7,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import StreamingResponse
+from pydantic import ValidationError
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
@@ -26,6 +27,7 @@ from ..security import Principal, require_app
 from ..services.capabilities import (
     check_grant,
     find_capability_by_model,
+    parse_retrieval_scope,
     resolve_capability,
     validate_against_schema,
 )
@@ -86,6 +88,20 @@ def _authorize_and_rate_limit(
 
 def _model_name(capability: Capability, version: CapabilityVersion) -> str:
     return version.adapter_alias or version.model_name or capability.code
+
+
+def _enforce_retrieval_scope(grant: CapabilityGrant, kb_ids: list[int]) -> None:
+    try:
+        allowed = parse_retrieval_scope(grant.data_scope)
+    except ValueError as exc:
+        raise ApiError("FORBIDDEN", "检索授权范围无效", 403) from exc
+    if allowed is not None:
+        unauthorized = set(kb_ids) - allowed
+        if unauthorized:
+            raise ApiError(
+                "FORBIDDEN", "检索请求包含授权范围外的知识库", 403,
+                {"kb_ids": sorted(unauthorized)},
+            )
 
 
 def _extract_usage(output: dict[str, Any]) -> tuple[int, int]:
@@ -237,20 +253,13 @@ def execute_capability(
         input_tokens = _estimate_tokens(json.dumps(payload.input, ensure_ascii=False))
         output_tokens = _estimate_tokens(str(output.get("text", "")))
     elif capability.type == "RAG_RETRIEVE":
-        retrieve_request = RetrieveRequest(**payload.input)
+        try:
+            retrieve_request = RetrieveRequest(**payload.input)
+        except ValidationError as exc:
+            raise ApiError("INVALID_ARGUMENT", "检索请求参数无效", 400) from exc
         for kb_id in set(retrieve_request.kb_ids):
             _kb_for(db, principal, kb_id)
-        scope = grant.data_scope if isinstance(grant.data_scope, dict) else {}
-        allowed_kb_ids = scope.get("kb_ids")
-        if allowed_kb_ids:
-            unauthorized = set(retrieve_request.kb_ids) - {int(item) for item in allowed_kb_ids}
-            if unauthorized:
-                raise ApiError(
-                    "FORBIDDEN",
-                    "检索请求包含授权范围外的知识库",
-                    403,
-                    {"kb_ids": sorted(unauthorized)},
-                )
+        _enforce_retrieval_scope(grant, retrieve_request.kb_ids)
         output = retrieve(
             db,
             tenant_id=principal.tenant_id or 0,
@@ -311,21 +320,13 @@ def execute_capability(
         query = payload.input.get("query")
         if not isinstance(kb_ids, list) or not kb_ids or not isinstance(query, str):
             raise ApiError("INVALID_ARGUMENT", "input 需要 kb_ids 和 query", 400)
-        for kb_id in {int(item) for item in kb_ids}:
+        try:
+            parsed_kb_ids = parse_retrieval_scope({"kb_ids": kb_ids})
+        except ValueError as exc:
+            raise ApiError("INVALID_ARGUMENT", str(exc), 400) from exc
+        for kb_id in parsed_kb_ids or set():
             _kb_for(db, principal, kb_id)
-        scope = grant.data_scope if isinstance(grant.data_scope, dict) else {}
-        allowed_kb_ids = scope.get("kb_ids")
-        if allowed_kb_ids:
-            unauthorized = {int(item) for item in kb_ids} - {
-                int(item) for item in allowed_kb_ids
-            }
-            if unauthorized:
-                raise ApiError(
-                    "FORBIDDEN",
-                    "检索请求包含授权范围外的知识库",
-                    403,
-                    {"kb_ids": sorted(unauthorized)},
-                )
+        _enforce_retrieval_scope(grant, list(parsed_kb_ids or set()))
         result = retrieve(
             db,
             tenant_id=principal.tenant_id or 0,

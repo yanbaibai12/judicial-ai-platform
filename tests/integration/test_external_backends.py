@@ -22,7 +22,11 @@ def test_neo4j_health(monkeypatch):
 
     settings = get_settings()
     monkeypatch.setattr(settings, "graph_backend", "neo4j")
-    assert Neo4jGraphStore().health()["status"] == "ok"
+    store = Neo4jGraphStore()
+    try:
+        assert store.health()["status"] == "ok"
+    finally:
+        store.close()
 
 
 @pytest.mark.skipif(

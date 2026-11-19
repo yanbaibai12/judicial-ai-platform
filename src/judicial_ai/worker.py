@@ -5,6 +5,7 @@ import logging
 
 from .config import get_settings
 from .logging import setup_logging
+from .services.graph_store import close_graph_store
 from .services.jobs import run_worker_loop
 
 logger = logging.getLogger("judicial_ai.worker")
@@ -23,11 +24,14 @@ def main() -> None:
         "worker_started",
         extra={"status": "RUNNING", "job_type": "worker"},
     )
-    run_worker_loop(
-        once=args.once,
-        poll_seconds=args.poll_seconds,
-        batch_size=args.batch_size,
-    )
+    try:
+        run_worker_loop(
+            once=args.once,
+            poll_seconds=args.poll_seconds,
+            batch_size=args.batch_size,
+        )
+    finally:
+        close_graph_store()
     logger.info("worker_stopped", extra={"status": "STOPPED", "job_type": "worker"})
 
 

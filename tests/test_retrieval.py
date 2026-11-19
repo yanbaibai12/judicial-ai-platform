@@ -2,9 +2,49 @@ from __future__ import annotations
 
 import uuid
 
-from judicial_ai.config import get_settings
+import pytest
+from pydantic import ValidationError
+
+from judicial_ai.config import Settings, get_settings
 from judicial_ai.services import retrieval as retrieval_service
 from judicial_ai.text_utils import normalize_text
+
+
+@pytest.mark.parametrize("value", ["nan", "inf", "-inf"])
+def test_rerank_threshold_must_be_finite(monkeypatch, value: str) -> None:
+    monkeypatch.setenv("RAG_MIN_RERANK_SCORE", value)
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None)
+
+
+@pytest.mark.parametrize(("top_k", "expected"), [(1, 2), (3, 3)])
+def test_rerank_candidate_limit_respects_top_k(
+    client, new_tenant_app, monkeypatch, top_k, expected
+):
+    headers = new_tenant_app["headers"]
+    kb_id = _create_kb(client, headers)
+    for index in range(4):
+        response = client.post(
+            f"/api/v1/kbs/{kb_id}/documents",
+            json={"title": str(index), "text": f"test document {index}"},
+            headers=headers,
+        )
+        assert response.status_code == 201
+    monkeypatch.setattr(get_settings(), "rag_rerank_candidates", 2)
+    seen = []
+
+    def rerank(_model, _query, documents):
+        seen.append(len(documents))
+        return [{"index": i, "relevance_score": 0.5} for i in range(len(documents))]
+
+    monkeypatch.setattr(retrieval_service.get_inference_client(), "rerank", rerank)
+    response = client.post(
+        "/v1/retrieve", json={"kb_ids": [kb_id], "query": "test", "top_k": top_k},
+        headers=headers,
+    )
+    assert response.status_code == 200
+    assert seen == [expected]
+    assert len(response.json()["results"]) == top_k
 
 
 def _create_kb(client, headers) -> int:
@@ -21,6 +61,86 @@ def _create_kb(client, headers) -> int:
     )
     assert response.status_code == 201, response.text
     return response.json()["data"]["id"]
+
+
+def test_rerank_threshold_filters_unrelated_and_missing_scores(client, new_tenant_app, monkeypatch):
+    headers = new_tenant_app["headers"]
+    kb_id = _create_kb(client, headers)
+    response = client.post(
+        f"/api/v1/kbs/{kb_id}/documents",
+        json={"title": "test", "text": "民间借贷利率有相关规定"},
+        headers=headers,
+    )
+    assert response.status_code == 201
+    settings = get_settings()
+    monkeypatch.setattr(settings, "rag_min_rerank_score", 0.5)
+    inference = retrieval_service.get_inference_client()
+    query = {"kb_ids": [kb_id], "query": "民间借贷", "compress": True}
+
+    for results, expected in [
+        ([{"index": 0, "relevance_score": 0.8}], 1),
+        ([{"index": 0, "relevance_score": 0.01}], 0),
+        ([], 0),
+    ]:
+        monkeypatch.setattr(inference, "rerank", lambda *args, result=results: result)
+        response = client.post("/v1/retrieve", json=query, headers=headers)
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert len(body["results"]) == expected
+        if not expected:
+            assert body["citation"]["status"] == "NONE"
+            assert body["compression"]["reason"] == "no_results"
+            assert body["usage"]["filtered_low_relevance"] == 1
+
+    monkeypatch.setattr(
+        inference, "rerank", lambda *args: [{"index": 0, "relevance_score": float("nan")}]
+    )
+    assert client.post("/v1/retrieve", json=query, headers=headers).status_code == 503
+
+
+@pytest.mark.parametrize(
+    ("best_score", "worst_score", "threshold"),
+    [(0.8, 0.2, 0.5), (-1.0, -5.0, -2.0), (1e308, -1e308, 0.0)],
+)
+def test_rerank_scores_keep_their_order(
+    client, new_tenant_app, monkeypatch, best_score, worst_score, threshold
+):
+    headers = new_tenant_app["headers"]
+    kb_id = _create_kb(client, headers)
+    for title in ("best", "worst", "missing"):
+        response = client.post(
+            f"/api/v1/kbs/{kb_id}/documents",
+            json={"title": title, "text": f"司法证据 {title}"},
+            headers=headers,
+        )
+        assert response.status_code == 201, response.text
+
+    def rerank(_model, _query, documents):
+        return [
+            {"index": index, "relevance_score": best_score if "best" in text else worst_score}
+            for index, text in enumerate(documents)
+            if "missing" not in text
+        ]
+
+    monkeypatch.setattr(retrieval_service.get_inference_client(), "rerank", rerank)
+    response = client.post(
+        "/v1/retrieve",
+        json={"kb_ids": [kb_id], "query": "司法证据", "top_k": 3},
+        headers=headers,
+    )
+    assert response.status_code == 200, response.text
+    assert len(response.json()["results"]) == 3
+    assert "best" in response.json()["results"][0]["text"]
+
+    monkeypatch.setattr(get_settings(), "rag_min_rerank_score", threshold)
+    response = client.post(
+        "/v1/retrieve",
+        json={"kb_ids": [kb_id], "query": "司法证据", "top_k": 3},
+        headers=headers,
+    )
+    assert response.status_code == 200, response.text
+    assert len(response.json()["results"]) == 1
+    assert "best" in response.json()["results"][0]["text"]
 
 
 def test_empty_milvus_results_do_not_use_sql_fallback(client, new_tenant_app, monkeypatch):

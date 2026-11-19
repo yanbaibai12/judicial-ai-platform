@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 from ..acl import accessible_document_ids, has_access
 from ..db import get_db
 from ..errors import ApiError
-from ..models import Job, KnowledgeBase, utcnow
+from ..models import EvalResult, EvalTask, Job, KnowledgeBase, utcnow
 from ..security import Principal, require_any, require_permission
 from ..services.jobs import job_to_dict
 from .utils import ok, tenant_scope
@@ -77,8 +77,28 @@ def retry_job(
     db: Session = Depends(get_db),
 ):
     job = _job_for(db, principal, job_id, need="write")
+    job = db.query(Job).filter_by(id=job.id).populate_existing().with_for_update().one()
     if job.status not in {"FAILED", "CANCELLED"}:
         raise ApiError("INVALID_STATE", "仅失败或已取消任务可重试", 409, {"status": job.status})
+    if job.job_type == "eval":
+        try:
+            eval_id = int((job.payload or {}).get("eval_task_id") or 0)
+        except (TypeError, ValueError) as exc:
+            raise ApiError("INVALID_STATE", "评测任务引用无效", 409) from exc
+        task = (
+            db.query(EvalTask)
+            .filter_by(id=eval_id, tenant_id=job.tenant_id)
+            .populate_existing()
+            .with_for_update()
+            .first()
+        )
+        if task is None or task.status not in {"PENDING", "FAILED"}:
+            raise ApiError("INVALID_STATE", "关联评测不存在或已完成，不能重试", 409)
+        db.query(EvalResult).filter_by(eval_task_id=task.id).delete(synchronize_session=False)
+        task.status = "PENDING"
+        task.metrics = {}
+        task.error = None
+        task.finished_at = None
     job.status = "PENDING"
     job.attempts = 0
     job.error = None

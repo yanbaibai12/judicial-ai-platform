@@ -7,7 +7,13 @@ from datetime import timedelta
 from judicial_ai.config import get_settings
 from judicial_ai.db import SessionLocal
 from judicial_ai.models import Job, utcnow
-from judicial_ai.services.jobs import JOB_HANDLERS, enqueue_job, recover_stale_jobs, run_worker_loop
+from judicial_ai.services.jobs import (
+    JOB_HANDLERS,
+    _execute_running,
+    enqueue_job,
+    recover_stale_jobs,
+    run_worker_loop,
+)
 
 
 def test_stale_job_fails_without_automatic_retry(client, monkeypatch):
@@ -24,6 +30,26 @@ def test_stale_job_fails_without_automatic_retry(client, monkeypatch):
         assert job.status == "FAILED"
         assert "outcome uncertain" in job.error
         assert recover_stale_jobs(db, stale_after_seconds=10) == 0
+
+
+def test_job_failure_does_not_persist_exception_details(client, monkeypatch, caplog):
+    def handler(db, job):
+        raise RuntimeError("secret connection string")
+
+    monkeypatch.setitem(JOB_HANDLERS, "redaction-test", handler)
+    with SessionLocal() as db:
+        job = Job(
+            id="job-redaction-test", job_type="redaction-test", tenant_id=1, payload={},
+            status="RUNNING", attempts=1, max_attempts=1,
+        )
+        db.add(job)
+        db.commit()
+        result = _execute_running(db, job)
+        assert result.status == "FAILED"
+        assert result.error == "RuntimeError"
+    record = next(record for record in caplog.records if record.message == "job_failed")
+    assert record.error == "RuntimeError"
+    assert "secret connection string" not in caplog.text
 
 
 def test_active_job_heartbeat_prevents_recovery(client, monkeypatch):

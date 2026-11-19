@@ -1,6 +1,7 @@
 ﻿from __future__ import annotations
 
 import json
+import math
 import time
 from collections.abc import Iterator
 from functools import lru_cache
@@ -9,7 +10,7 @@ from typing import Any
 import httpx
 
 from ..config import get_settings
-from ..errors import ApiError
+from ..errors import ApiError, sanitize_exception_summary
 from ..text_utils import deterministic_embedding, keyword_score
 
 
@@ -20,15 +21,29 @@ class InferenceClient:
             timeout=httpx.Timeout(self.settings.inference_timeout_seconds),
             headers=self._headers(),
         )
+        self._embedding_client = self._client
+        if self.settings.embedding_base_url:
+            self._embedding_client = httpx.Client(
+                timeout=httpx.Timeout(self.settings.inference_timeout_seconds),
+                headers=self._headers(self.settings.embedding_api_key, fallback=False),
+            )
+        self._rerank_client = self._client
+        if self.settings.rerank_base_url:
+            self._rerank_client = httpx.Client(
+                timeout=httpx.Timeout(self.settings.inference_timeout_seconds),
+                headers=self._headers(self.settings.rerank_api_key, fallback=False),
+            )
 
-    def _headers(self) -> dict[str, str]:
+    def _headers(self, api_key: str | None = None, *, fallback: bool = True) -> dict[str, str]:
         headers = {"Content-Type": "application/json"}
-        if self.settings.inference_api_key:
-            headers["Authorization"] = f"Bearer {self.settings.inference_api_key}"
+        key = self.settings.inference_api_key if fallback else api_key
+        if key:
+            headers["Authorization"] = f"Bearer {key}"
         return headers
 
-    def _url(self, path: str) -> str:
-        return f"{self.settings.inference_base_url.rstrip('/')}/{path.lstrip('/')}"
+    def _url(self, path: str, base_url: str | None = None) -> str:
+        base = base_url or self.settings.inference_base_url
+        return f"{base.rstrip('/')}/{path.lstrip('/')}"
 
     def _raise_for_upstream(self, exc: Exception) -> None:
         if isinstance(exc, httpx.TimeoutException):
@@ -63,7 +78,7 @@ class InferenceClient:
                 "status": "error",
                 "backend": "proxy",
                 "base_url": self.settings.inference_base_url,
-                "error": str(exc)[:240],
+                "error": sanitize_exception_summary(exc),
             }
 
     def chat(self, model: str, messages: list[dict[str, Any]], **options: Any) -> dict[str, Any]:
@@ -105,10 +120,35 @@ class InferenceClient:
             return [deterministic_embedding(text, self.settings.embedding_dim) for text in inputs]
         payload = {"model": model, "input": inputs}
         try:
-            response = self._client.post(self._url("embeddings"), json=payload)
+            response = self._embedding_client.post(
+                self._url("embeddings", self.settings.embedding_base_url), json=payload
+            )
             response.raise_for_status()
-            data = response.json()
-            return [item["embedding"] for item in data["data"]]
+            items = response.json()["data"]
+            if not isinstance(items, list) or len(items) != len(inputs):
+                raise ValueError("Invalid embedding count")
+            indices = [item.get("index") for item in items]
+            if any("index" in item for item in items):
+                if any(type(index) is not int for index in indices) or set(indices) != set(
+                    range(len(inputs))
+                ):
+                    raise ValueError("Invalid embedding indices")
+                items = sorted(items, key=lambda item: item["index"])
+            vectors = [item["embedding"] for item in items]
+            if any(
+                not isinstance(vector, list)
+                or not vector
+                or len(vector) != len(vectors[0])
+                or any(
+                    isinstance(value, bool)
+                    or not isinstance(value, (int, float))
+                    or not math.isfinite(value)
+                    for value in vector
+                )
+                for vector in vectors
+            ):
+                raise ValueError("Invalid embedding vectors")
+            return vectors
         except Exception as exc:
             self._raise_for_upstream(exc)
             raise
@@ -120,16 +160,45 @@ class InferenceClient:
                 for index, document in enumerate(documents)
             ]
             return sorted(scored, key=lambda item: item["relevance_score"], reverse=True)
-        payload = {"model": model, "query": query, "documents": documents}
+        if self.settings.rerank_api_format == "tei" and model != self.settings.rag_rerank_model:
+            raise ApiError("INVALID_ARGUMENT", "重排服务不支持所请求的模型", 400)
+        payload = (
+            {"query": query, "texts": documents, "truncate": True}
+            if self.settings.rerank_api_format == "tei"
+            else {"model": model, "query": query, "documents": documents}
+        )
         try:
-            response = self._client.post(self._url("rerank"), json=payload)
+            response = self._rerank_client.post(
+                self._url("rerank", self.settings.rerank_base_url), json=payload
+            )
             response.raise_for_status()
             data = response.json()
-            if isinstance(data, dict) and "results" in data:
-                return data["results"]
-            if isinstance(data, list):
-                return data
-            raise ApiError("UPSTREAM_UNAVAILABLE", "Rerank 响应格式不兼容", 503)
+            results = data.get("results") if isinstance(data, dict) else data
+            if not isinstance(results, list):
+                raise ValueError("Invalid rerank results")
+            if self.settings.rerank_api_format == "standard":
+                return results
+            normalized = []
+            seen = set()
+            for item in results:
+                index = item["index"]
+                score = item.get("score")
+                if (
+                    not isinstance(index, int)
+                    or isinstance(index, bool)
+                    or index < 0
+                    or index >= len(documents)
+                    or index in seen
+                    or not isinstance(score, (int, float))
+                    or isinstance(score, bool)
+                    or not math.isfinite(score)
+                ):
+                    raise ValueError("Invalid rerank item")
+                seen.add(index)
+                normalized.append({"index": index, "relevance_score": float(score)})
+            if len(normalized) != len(documents):
+                raise ValueError("Incomplete rerank results")
+            return normalized
         except ApiError:
             raise
         except Exception as exc:

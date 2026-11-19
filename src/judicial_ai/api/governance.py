@@ -30,6 +30,7 @@ from ..schemas import (
     BadCaseUpdate,
     DatasetCreate,
     DatasetExportRequest,
+    DatasetItemExclusion,
     DatasetVersionCreate,
     EvalTaskCreate,
     FeedbackCreate,
@@ -43,6 +44,7 @@ from ..services.governance import (
     create_dataset_version,
     create_eval_task,
     create_retention_job,
+    exclude_rejected_dataset_items,
     export_dataset_version,
     get_eval_task,
     governance_metrics,
@@ -428,6 +430,24 @@ def export_dataset(
             "X-Request-Id": getattr(request.state, "request_id", ""),
         },
     )
+
+
+@router.post("/api/v1/dataset-versions/{version_id}/items/exclude")
+def exclude_dataset_items(
+    version_id: int,
+    payload: DatasetItemExclusion,
+    request: Request,
+    principal: Principal = Depends(require_permission("governance:write")),
+    db: Session = Depends(get_db),
+):
+    version = exclude_rejected_dataset_items(
+        db, principal, version_id, payload.item_ids, payload.reason
+    )
+    audit(
+        db, principal, "dataset.items.exclude", "dataset_version", version_id,
+        after={"item_ids": payload.item_ids},
+    )
+    return ok(request, _dataset_version_dict(version))
 
 
 @router.get("/api/v1/dataset-versions/{version_id}/items")

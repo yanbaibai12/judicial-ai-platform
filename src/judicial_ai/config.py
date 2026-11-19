@@ -1,6 +1,7 @@
 ﻿from functools import lru_cache
 from typing import Literal
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -19,21 +20,39 @@ class Settings(BaseSettings):
     app_env: str = "dev"
     log_level: str = "INFO"
     docs_enabled: bool = True
+    console_demo_mode: bool = False
 
     database_url: str = "sqlite:///./data/judicial_ai.db"
     data_dir: str = "./data"
     admin_token: str = "dev-admin-token"
+    api_key_hash_secret: str = "dev-api-key-hash-secret"
+    api_key_hash_legacy_secrets: str = ""
     db_pool_size: int = 10
     db_max_overflow: int = 20
     db_pool_timeout_seconds: int = 30
     auto_create_schema: bool = True
     node_id: int = -1
 
+    object_store_backend: Literal["filesystem", "s3"] = "filesystem"
+    object_store_path: str = "./data/objects"
+    object_store_bucket: str = "judicial-ai-originals"
+    object_store_endpoint_url: str | None = None
+    object_store_region: str | None = None
+    object_store_access_key: str | None = None
+    object_store_secret_key: str | None = None
+    object_store_sse: str = "AES256"
+    document_retention_days: int = 30
+
     inference_mode: Literal["mock", "proxy"] = "mock"
     inference_base_url: str = "http://localhost:8000/v1"
     inference_api_key: str | None = None
     inference_timeout_seconds: float = 60.0
 
+    embedding_base_url: str | None = None
+    embedding_api_key: str | None = None
+    rerank_api_format: Literal["standard", "tei"] = "standard"
+    rerank_base_url: str | None = None
+    rerank_api_key: str | None = None
     embedding_model: str = "bge-m3"
     embedding_dim: int = 1024
 
@@ -57,6 +76,7 @@ class Settings(BaseSettings):
 
     graph_enabled: bool = False
     graph_backend: Literal["sql", "neo4j"] = "sql"
+    graph_fail_open: bool = True
     graph_max_depth: int = 2
     neo4j_uri: str | None = None
     neo4j_user: str = "neo4j"
@@ -86,11 +106,18 @@ class Settings(BaseSettings):
     ldap_reader_groups: str = "cn=platform-reader,ou=groups,dc=example,dc=com"
     oidc_default_tenant_id: int | None = None
     ldap_default_tenant_id: int | None = None
+    # OIDC 令牌撤销：命中撤销列表的 jti，或被主体级撤销覆盖的令牌，立即拒绝
+    token_revocation_enabled: bool = True
+    # 撤销判定本地缓存秒数，即"撤销生效时间"的上限（0 表示每次请求查库）
+    token_revocation_cache_seconds: float = 15.0
 
     # 细粒度资源级 ACL（KB/文档级授权）；False 时仅租户隔离，保持兼容
     resource_acl_enforced: bool = False
     # 文档写入后自动入队 kb_index 索引任务（按文档版本幂等）
     kb_auto_index_after_upload: bool = True
+    # 生产要求索引经过审批，并且检索必须使用显式 prod alias。
+    index_require_approval: bool = False
+    require_prod_alias: bool = False
     # 示例规则未经法律专业审核，不允许在生产环境启用。
     contract_review_enabled: bool = True
 
@@ -111,6 +138,14 @@ class Settings(BaseSettings):
 
     default_top_k: int = 10
     max_top_k: int = 50
+    # 相关性下限：dense/关键词信号都低于各自阈值时丢弃候选，避免无关查询也返回 top_k。
+    # 两者均为 0 表示关闭（保持历史行为）。
+    # staging 建议 RAG_MIN_DENSE_SCORE≥0.15、RAG_MIN_KEYWORD_SCORE≥0.3，接入真实
+    # embedding 与 rerank 后必须用评测集重新标定，不能用默认值当承诺。
+    rag_min_dense_score: float = 0.0
+    rag_min_keyword_score: float = 0.0
+    # 原始重排分数与模型相关；None 表示关闭，启用前须用独立评测集校准。
+    rag_min_rerank_score: float | None = Field(default=None, allow_inf_nan=False)
 
     decision_provider: Literal["rule", "jev"] = "rule"
     decision_shadow_enabled: bool = False
@@ -126,6 +161,7 @@ class Settings(BaseSettings):
     rag_compression_enabled: bool = True
     rag_compression_max_chars: int = 8000
     rag_rerank_model: str = "bge-reranker-v2-m3"
+    rag_rerank_candidates: int = Field(default=50, ge=1, le=50)
     rag_compression_provider: Literal["extractive", "llm"] = "extractive"
     # ReFRAG 分段感知压缩：先按段落/章节边界选段，再做句子级精修
     rag_compression_segment_aware: bool = True
@@ -149,6 +185,10 @@ class Settings(BaseSettings):
     @property
     def is_production(self) -> bool:
         return self.app_env.lower() in {"prod", "production"}
+
+    @property
+    def is_delivery_environment(self) -> bool:
+        return self.app_env.lower() in {"staging", "prod", "production"}
 
     @property
     def cors_origin_list(self) -> list[str]:

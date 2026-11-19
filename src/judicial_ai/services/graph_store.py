@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 
 from ..config import get_settings
 from ..db import SessionLocal
+from ..errors import sanitize_exception_summary
 from ..ids import new_id
 from ..models import ChunkMeta, GraphEntity, GraphRelation, IndexVersion, KnowledgeBase
 from .graph_extract import entity_terms, extract_entities
@@ -56,8 +57,14 @@ class GraphStore:
     def delete_index(self, index_version_id: int) -> None:
         return None
 
+    def list_index_ids(self) -> set[int]:
+        return set()
+
     def health(self) -> dict[str, Any]:
         return {"status": "ok", "backend": self.backend}
+
+    def close(self) -> None:
+        return None
 
 
 class SqlGraphStore(GraphStore):
@@ -210,6 +217,16 @@ class SqlGraphStore(GraphStore):
         except Exception:
             db.rollback()
             raise
+        finally:
+            db.close()
+
+    def list_index_ids(self) -> set[int]:
+        db: Session = SessionLocal()
+        try:
+            return {
+                int(row[0])
+                for row in db.query(GraphEntity.index_version_id).distinct().all()
+            }
         finally:
             db.close()
 
@@ -374,12 +391,30 @@ class Neo4jGraphStore(GraphStore):
                 index_version_id=index_version_id,
             ).consume()
 
+    def list_index_ids(self) -> set[int]:
+        with self._driver.session(database=self._settings.neo4j_database) as session:
+            result = session.run(
+                "MATCH (e:Entity) RETURN DISTINCT e.index_version_id AS index_version_id"
+            )
+            return {
+                int(record["index_version_id"])
+                for record in result
+                if record["index_version_id"] is not None
+            }
+
     def health(self) -> dict[str, Any]:
         try:
             self._driver.verify_connectivity()
             return {"status": "ok", "backend": "neo4j"}
         except Exception as exc:  # noqa: BLE001
-            return {"status": "error", "backend": "neo4j", "error": str(exc)[:240]}
+            return {
+                "status": "error",
+                "backend": "neo4j",
+                "error": sanitize_exception_summary(exc),
+            }
+
+    def close(self) -> None:
+        self._driver.close()
 
 
 @lru_cache
@@ -388,6 +423,15 @@ def get_graph_store() -> GraphStore:
     if settings.graph_backend == "neo4j":
         return Neo4jGraphStore()
     return SqlGraphStore()
+
+
+def close_graph_store() -> None:
+    if get_graph_store.cache_info().currsize == 0:
+        return
+    try:
+        get_graph_store().close()
+    finally:
+        get_graph_store.cache_clear()
 
 
 def graph_search_or_degraded(
